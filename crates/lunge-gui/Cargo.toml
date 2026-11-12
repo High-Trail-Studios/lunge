@@ -1,0 +1,73 @@
+[package]
+name = "lunge-gui"
+description = "Desktop GUI for AWS SSO sessions: see live/expired state, re-login, open the console."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "lunge"
+path = "src/main.rs"
+
+[dependencies]
+lunge-core.workspace = true
+eframe.workspace = true
+
+[lints]
+workspace = true
+
+# Linux packages. Build from the workspace root:
+#   cargo deb -p lunge-gui
+#   cargo generate-rpm -p crates/lunge-gui   (after `cargo build --release -p lunge-gui`)
+# Paths under target/release/ are rewritten by both tools; other sources are
+# relative to this crate's directory.
+
+[package.metadata.deb]
+name = "lunge"
+section = "utils"
+license-file = "../../LICENSE"
+extended-description = """\
+Lunge lists your AWS SSO sessions, shows which are live or expired, \
+re-logs in through the AWS CLI, and opens the AWS console for a role. \
+It never stores credentials: the AWS CLI owns all token persistence."""
+# $auto only sees linked libraries (libc). winit and glutin dlopen the X11,
+# Wayland, xkbcommon, and EGL/GL libraries at runtime, so declare them
+# explicitly or a minimal install fails to open a window.
+depends = """$auto, libx11-6, libx11-xcb1, libxcb1, libxcursor1, libxi6, libxrandr2, \
+libxkbcommon0, libxkbcommon-x11-0, libwayland-client0, libwayland-cursor0, \
+libwayland-egl1, libegl1, libgl1"""
+assets = [
+  ["target/release/lunge", "usr/bin/", "755"],
+  ["assets/lunge.desktop", "usr/share/applications/", "644"],
+  ["../../NOTICE", "usr/share/doc/lunge/", "644"],
+]
+
+[package.metadata.generate-rpm]
+name = "lunge"
+summary = "Desktop GUI for AWS SSO sessions"
+assets = [
+  { source = "target/release/lunge", dest = "/usr/bin/lunge", mode = "755" },
+  { source = "assets/lunge.desktop", dest = "/usr/share/applications/lunge.desktop", mode = "644" },
+  { source = "../../LICENSE", dest = "/usr/share/licenses/lunge/LICENSE", mode = "644", doc = true },
+  { source = "../../NOTICE", dest = "/usr/share/licenses/lunge/NOTICE", mode = "644", doc = true },
+]
+
+# Same dlopen'd libraries as the deb `depends`, by soname so the requirement
+# resolves on any RPM distro regardless of package naming.
+[package.metadata.generate-rpm.requires]
+"libX11.so.6()(64bit)" = "*"
+"libX11-xcb.so.1()(64bit)" = "*"
+"libxcb.so.1()(64bit)" = "*"
+"libXcursor.so.1()(64bit)" = "*"
+"libXi.so.6()(64bit)" = "*"
+"libXrandr.so.2()(64bit)" = "*"
+"libxkbcommon.so.0()(64bit)" = "*"
+"libxkbcommon-x11.so.0()(64bit)" = "*"
+"libwayland-client.so.0()(64bit)" = "*"
+"libwayland-cursor.so.0()(64bit)" = "*"
+"libwayland-egl.so.1()(64bit)" = "*"
+"libEGL.so.1()(64bit)" = "*"
+"libGL.so.1()(64bit)" = "*"

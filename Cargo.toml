@@ -1,0 +1,33 @@
+[workspace]
+members = ["crates/lunge-core", "crates/lunge-gui"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+license = "Apache-2.0"
+authors = ["High Trail Studios"]
+repository = "https://github.com/High-Trail-Studios/lunge"
+
+[workspace.dependencies]
+lunge-core = { path = "crates/lunge-core", version = "0.1.0" }
+# glow (OpenGL) instead of the default wgpu renderer: a session list doesn't
+# need wgpu, and glow keeps the binary and build noticeably smaller.
+eframe = { version = "0.37.0", default-features = false, features = [
+  "accesskit",
+  "default_fonts",
+  "glow",
+  "wayland",
+  "x11",
+] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[profile.release]
+# cargo-generate-rpm packages the binary as-is, so strip it at build time.
+strip = true

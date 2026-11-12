@@ -1,0 +1,14 @@
+[package]
+name = "lunge-core"
+description = "UI-agnostic core for Lunge: reads AWS CLI SSO state and drives the CLI. No GUI dependencies."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

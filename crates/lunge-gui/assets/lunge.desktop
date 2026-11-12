@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Lunge
+Comment=See, refresh, and open AWS SSO sessions
+Exec=lunge
+Terminal=false
+Categories=Development;Utility;
+StartupWMClass=lunge
