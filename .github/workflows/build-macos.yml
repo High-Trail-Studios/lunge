@@ -1,13 +1,17 @@
 name: Build macOS
 
 # On demand (Actions tab -> "Build macOS" -> Run workflow, or
-# `gh workflow run build-macos.yml`) and on version tags. Not on every push:
-# macOS runner minutes cost 10x Linux minutes on private repos, and the CI
-# workflow already checks macOS on every push.
+# `gh workflow run build-macos.yml`), and called by the Release workflow.
+# Not on every push: macOS runner minutes cost 10x Linux minutes on private
+# repos, and the CI workflow already checks macOS on every push.
 on:
   workflow_dispatch:
-  push:
-    tags: ["v*"]
+  workflow_call:
+    inputs:
+      ref:
+        description: Commit to build
+        type: string
+        required: true
 
 permissions:
   contents: read
@@ -20,6 +24,8 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.sha }}
       # Installs the toolchain pinned in rust-toolchain.toml, plus both Mac targets.
       - run: rustup toolchain install && rustup target add aarch64-apple-darwin x86_64-apple-darwin
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3

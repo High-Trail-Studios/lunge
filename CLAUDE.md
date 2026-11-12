@@ -98,5 +98,11 @@ pixels, names, logos, icons, strings, or layout.
 - Before committing: `cargo fmt --all`,
   `cargo clippy --workspace --all-targets -- -D warnings`,
   `cargo test --workspace`.
+- Releasing: bump `version` under `[workspace.package]` in `Cargo.toml`,
+  run `cargo check` so `Cargo.lock` follows (CI uses `--locked`), commit,
+  and push to `main`. When CI passes for that commit, the Release workflow
+  builds the macOS binary, takes CI's tested `.deb`/`.rpm`, and publishes
+  tag `vX.Y.Z` with all three plus `SHA256SUMS`. Pushes without a version
+  bump don't release (macOS minutes are expensive on a private repo).
 - Work is tracked in Linear (project P-BRI-10); M0–M4 milestones, tickets
   BRI-160 to BRI-181.

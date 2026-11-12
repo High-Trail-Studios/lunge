@@ -125,15 +125,24 @@ Lunge creates no AWS resources and makes no billable AWS API calls.
 
 ## Install
 
-Packages are not published yet. `.deb` and `.rpm` packages are built by CI on
-every push to `main` (see the workflow run's artifacts).
+Download the latest build from the repository's **Releases** page:
 
-**macOS (interim):** the **Build macOS** workflow (Actions tab -> Run
-workflow, or `gh workflow run build-macos.yml`) produces an unsigned universal
-binary as the `lunge-macos-universal` artifact; its `README-macos.txt` covers
-clearing Gatekeeper's quarantine flag. It runs on demand rather than on every
-push because macOS runner minutes are expensive on private repos. A signed and
-notarized `.dmg` will replace it.
+| Platform | File | Install |
+|---|---|---|
+| Debian / Ubuntu | `lunge_<version>-1_amd64.deb` | `sudo apt install ./lunge_<version>-1_amd64.deb` |
+| Fedora / RHEL / openSUSE | `lunge-<version>-1.x86_64.rpm` | `sudo dnf install ./lunge-<version>-1.x86_64.rpm` |
+| macOS (Apple silicon and Intel) | `lunge-<version>-macos-universal.tar.gz` | Unpack and follow `README-macos.txt` inside |
+
+Each release includes `SHA256SUMS` for checking downloads
+(`sha256sum -c SHA256SUMS`, or `shasum -a 256 -c SHA256SUMS` on macOS). The
+macOS build is not yet signed or notarized, so Gatekeeper blocks it until you
+clear its quarantine flag (see `README-macos.txt`); a signed `.dmg` will
+replace it. Releases are x86_64 only on Linux for now, and 0.x versions are
+marked as pre-releases.
+
+Between releases, CI attaches `.deb`/`.rpm` packages to every push to `main`
+(workflow run artifacts), and the **Build macOS** workflow can be run on
+demand.
 
 ## Build from source
 

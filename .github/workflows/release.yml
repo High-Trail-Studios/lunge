@@ -1,0 +1,124 @@
+name: Release
+
+# Publishes a GitHub Release when a commit pushed to main carries a version
+# (workspace.package.version in Cargo.toml) that has no tag yet, and only
+# after CI has passed for that commit. Pushes that don't change the version
+# do nothing here.
+#
+# To release: bump the version in Cargo.toml, run `cargo check` so
+# Cargo.lock follows, commit, and push to main.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      release: ${{ steps.version.outputs.release }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+      - id: version
+        run: |
+          set -euo pipefail
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if git rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
+            echo "v$version is already released; nothing to do."
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Releasing v$version."
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  macos:
+    needs: plan
+    if: needs.plan.outputs.release == 'true'
+    uses: ./.github/workflows/build-macos.yml
+    with:
+      ref: ${{ github.event.workflow_run.head_sha }}
+
+  publish:
+    needs: [plan, macos]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write # create the tag and the release
+      actions: read # download the Linux packages from the CI run
+    env:
+      VERSION: ${{ needs.plan.outputs.version }}
+      SHA: ${{ github.event.workflow_run.head_sha }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+
+      # The exact .deb/.rpm that CI built and install-tested for this commit.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: linux-packages
+          path: dist/linux
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: lunge-macos-universal
+          path: dist/macos
+
+      - name: Collect release assets
+        run: |
+          set -euo pipefail
+          mkdir release
+          cp dist/linux/debian/*.deb dist/linux/generate-rpm/*.rpm release/
+          cp dist/macos/lunge-macos-universal.tar.gz "release/lunge-${VERSION}-macos-universal.tar.gz"
+          (cd release && sha256sum -- * > SHA256SUMS)
+          ls -la release
+          cat release/SHA256SUMS
+
+      - name: Write release notes
+        run: |
+          set -euo pipefail
+          prev=$(git describe --tags --abbrev=0 "${SHA}^" 2>/dev/null || true)
+          range=${prev:+$prev..}$SHA
+          {
+            echo "## Install"
+            echo
+            echo "- **Debian/Ubuntu:** \`sudo apt install ./lunge_${VERSION}-1_amd64.deb\`"
+            echo "- **Fedora/RHEL/openSUSE:** \`sudo dnf install ./lunge-${VERSION}-1.x86_64.rpm\`"
+            echo "- **macOS (Apple silicon and Intel):** unpack \`lunge-${VERSION}-macos-universal.tar.gz\` and follow \`README-macos.txt\` inside. This build is not yet signed or notarized."
+            echo
+            echo "Requires AWS CLI v2. Verify downloads with \`sha256sum -c SHA256SUMS\` (macOS: \`shasum -a 256 -c SHA256SUMS\`)."
+            echo
+            echo "## Changes${prev:+ since $prev}"
+            echo
+            git log --no-merges --pretty='- %s (%h)' "$range"
+          } > notes.md
+          cat notes.md
+
+      - name: Create tag and release
+        run: |
+          set -euo pipefail
+          flags=()
+          # 0.x versions and -suffixed versions are pre-releases.
+          case "$VERSION" in 0.* | *-*) flags+=(--prerelease) ;; esac
+          gh release create "v$VERSION" release/* \
+            --target "$SHA" \
+            --title "Lunge v$VERSION" \
+            --notes-file notes.md \
+            "${flags[@]}"
