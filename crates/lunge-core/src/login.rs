@@ -13,6 +13,8 @@ use std::io::{self, BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use time::OffsetDateTime;
 
@@ -20,6 +22,11 @@ use crate::cache::{self, SessionState};
 
 /// Most lines of CLI output kept per login; the flow prints only a handful.
 const MAX_OUTPUT_LINES: usize = 200;
+
+/// After the CLI exits, how long to let output readers drain its last lines
+/// (normally instant) before reporting without them. Bounded because a
+/// browser the CLI launched may hold the pipes open indefinitely.
+const OUTPUT_DRAIN_GRACE: Duration = Duration::from_millis(500);
 
 /// How to invoke the AWS CLI.
 #[derive(Debug, Clone)]
@@ -67,13 +74,15 @@ impl AwsCli {
         })?;
 
         let output = Arc::new(Mutex::new(Vec::new()));
-        // Readers are detached, never joined: a browser the CLI launches can
-        // inherit these pipes and hold them open long after the CLI exits.
+        // Readers are never joined unconditionally: a browser the CLI launches
+        // can inherit these pipes and hold them open long after the CLI exits.
+        // See OUTPUT_DRAIN_GRACE.
+        let mut readers = Vec::new();
         if let Some(stdout) = child.stdout.take() {
-            spawn_line_reader(stdout, Arc::clone(&output));
+            readers.push(spawn_line_reader(stdout, Arc::clone(&output)));
         }
         if let Some(stderr) = child.stderr.take() {
-            spawn_line_reader(stderr, Arc::clone(&output));
+            readers.push(spawn_line_reader(stderr, Arc::clone(&output)));
         }
 
         Ok(LoginProcess {
@@ -81,13 +90,18 @@ impl AwsCli {
             session: session.to_string(),
             cache_dir: cache_dir.to_path_buf(),
             output,
+            readers,
+            exited: None,
             cancelled: false,
             finished: false,
         })
     }
 }
 
-fn spawn_line_reader(stream: impl Read + Send + 'static, output: Arc<Mutex<Vec<String>>>) {
+fn spawn_line_reader(
+    stream: impl Read + Send + 'static,
+    output: Arc<Mutex<Vec<String>>>,
+) -> JoinHandle<()> {
     std::thread::spawn(move || {
         for line in BufReader::new(stream).lines() {
             let Ok(line) = line else { break };
@@ -96,7 +110,7 @@ fn spawn_line_reader(stream: impl Read + Send + 'static, output: Arc<Mutex<Vec<S
                 output.push(line);
             }
         }
-    });
+    })
 }
 
 /// A running `aws sso login`. Dropping it stops the CLI if still running.
@@ -105,6 +119,9 @@ pub struct LoginProcess {
     session: String,
     cache_dir: PathBuf,
     output: Arc<Mutex<Vec<String>>>,
+    readers: Vec<JoinHandle<()>>,
+    /// Exit status and when it was first seen.
+    exited: Option<(ExitStatus, Instant)>,
     cancelled: bool,
     finished: bool,
 }
@@ -131,21 +148,37 @@ impl LoginProcess {
         if self.finished {
             return None;
         }
-        let status = match self.child.try_wait() {
-            Ok(Some(status)) => status,
-            Ok(None) => return None,
-            Err(e) => return Some(self.finish(Err(LoginError::Spawn(e)))),
+        let (status, exited_at) = match self.exited {
+            Some(exited) => exited,
+            None => match self.child.try_wait() {
+                Ok(Some(status)) => *self.exited.insert((status, Instant::now())),
+                Ok(None) => return None,
+                Err(e) => return Some(self.finish(Err(LoginError::Spawn(e)))),
+            },
         };
+        if !self.output_drained() && exited_at.elapsed() < OUTPUT_DRAIN_GRACE {
+            return None;
+        }
         Some(self.finish(self.outcome(status)))
     }
 
     /// Blocks until the CLI exits.
     pub fn wait(mut self) -> Result<OffsetDateTime, LoginError> {
-        let result = match self.child.wait() {
-            Ok(status) => self.outcome(status),
-            Err(e) => Err(LoginError::Spawn(e)),
+        let status = match self.child.wait() {
+            Ok(status) => status,
+            Err(e) => return self.finish(Err(LoginError::Spawn(e))),
         };
+        let deadline = Instant::now() + OUTPUT_DRAIN_GRACE;
+        while !self.output_drained() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let result = self.outcome(status);
         self.finish(result)
+    }
+
+    /// Whether every line the CLI wrote has been collected.
+    fn output_drained(&self) -> bool {
+        self.readers.iter().all(JoinHandle::is_finished)
     }
 
     /// Stops the CLI. The next [`poll`](Self::poll) reports
@@ -303,6 +336,25 @@ echo "Successfully logged into Start URL: https://example.awsapps.com/start"
         };
         assert_eq!(status.code(), Some(255));
         assert!(err.to_string().contains("refresh failed"), "{err}");
+    }
+
+    #[test]
+    fn outcome_arrives_even_if_a_launched_process_holds_the_pipes() {
+        // Like a browser started by the CLI: inherits stdout/stderr and
+        // outlives the CLI itself.
+        let dir = tempfile::tempdir().unwrap();
+        let cli = fake_cli(dir.path(), "sleep 30 &\necho 'failed' >&2\nexit 1\n");
+        let started = Instant::now();
+        let err = cli
+            .start_login("work", dir.path())
+            .unwrap()
+            .wait()
+            .unwrap_err();
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "blocked on the pipes"
+        );
+        assert!(err.to_string().contains("failed"), "{err}");
     }
 
     #[test]
