@@ -17,4 +17,5 @@
 //! Every code path that touches credential state must restate this invariant
 //! in a comment at the point of contact.
 
+pub mod cache;
 pub mod config;
