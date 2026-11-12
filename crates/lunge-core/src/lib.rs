@@ -27,7 +27,7 @@ pub use time;
 use time::OffsetDateTime;
 
 use cache::SessionState;
-use config::{ConfigError, ConfigIssue, SsoSession};
+use config::{AccessKeyProfile, ConfigError, ConfigIssue, SsoSession};
 
 /// Every configured SSO session with its current state.
 #[derive(Debug, Clone)]
@@ -35,6 +35,7 @@ pub struct Inventory {
     pub config_path: PathBuf,
     pub cache_dir: PathBuf,
     pub sessions: Vec<SessionEntry>,
+    pub access_key_profiles: Vec<AccessKeyProfile>,
     pub issues: Vec<ConfigIssue>,
 }
 
@@ -46,21 +47,25 @@ pub struct SessionEntry {
 
 impl Inventory {
     /// Loads from the locations the AWS CLI uses (`AWS_CONFIG_FILE` or
-    /// `~/.aws/config`, and `~/.aws/sso/cache`).
+    /// `~/.aws/config`, `AWS_SHARED_CREDENTIALS_FILE` or
+    /// `~/.aws/credentials`, and `~/.aws/sso/cache`).
     pub fn load_default(now: OffsetDateTime) -> Result<Self, ConfigError> {
         let config_path = config::default_config_path().ok_or(ConfigError::NoPath)?;
+        let credentials_path = config::default_credentials_path();
         let cache_dir = cache::default_cache_dir().ok_or(ConfigError::NoPath)?;
-        Self::load(&config_path, &cache_dir, now)
+        Self::load(&config_path, credentials_path.as_deref(), &cache_dir, now)
     }
 
-    /// NO CREDENTIAL CUSTODY: reads the config and the CLI token cache;
-    /// writes nothing.
+    /// NO CREDENTIAL CUSTODY: reads the config, the profile names (never key
+    /// values) in the credentials file, and the CLI token cache; writes
+    /// nothing.
     pub fn load(
         config_path: &Path,
+        credentials_path: Option<&Path>,
         cache_dir: &Path,
         now: OffsetDateTime,
     ) -> Result<Self, ConfigError> {
-        let config = config::load(config_path)?;
+        let config = config::load(config_path, credentials_path)?;
         let sessions = config
             .sessions
             .into_iter()
@@ -73,6 +78,7 @@ impl Inventory {
             config_path: config_path.to_path_buf(),
             cache_dir: cache_dir.to_path_buf(),
             sessions,
+            access_key_profiles: config.access_key_profiles,
             issues: config.issues,
         })
     }
@@ -109,7 +115,7 @@ sso_session = gone
         .unwrap();
 
         let inventory =
-            Inventory::load(&config_path, &cache_dir, OffsetDateTime::now_utc()).unwrap();
+            Inventory::load(&config_path, None, &cache_dir, OffsetDateTime::now_utc()).unwrap();
 
         let states: Vec<_> = inventory
             .sessions

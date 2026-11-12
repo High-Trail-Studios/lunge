@@ -1,22 +1,60 @@
-//! Reading `~/.aws/config` into the SSO sessions and profiles Lunge shows.
+//! Reading `~/.aws/config` (and the profile names in `~/.aws/credentials`)
+//! into the sessions and profiles Lunge shows.
 //!
 //! Parsing mirrors the AWS CLI's own (botocore: Python's `RawConfigParser`
 //! followed by `build_profile_map`) so Lunge sees the same sessions the CLI
-//! does, and rejects the same files the CLI rejects. The config file holds no
-//! secrets; Lunge only ever reads it.
+//! does, and rejects the same files the CLI rejects. Lunge only ever reads
+//! these files.
+//!
+//! NO CREDENTIAL CUSTODY: either file can hold static keys
+//! (`aws_secret_access_key` and friends). Their values are discarded as each
+//! line is parsed and only their presence is kept; parse errors never quote
+//! file content; and the raw file bytes are zeroed once parsed (best effort,
+//! as in [`crate::cache`]).
 
 use std::collections::HashSet;
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 
-/// The SSO-relevant contents of an AWS config file.
+/// Keys whose values are secrets. Never stored; see the module docs.
+const SECRET_KEYS: [&str; 4] = [
+    "aws_access_key_id",
+    "aws_secret_access_key",
+    "aws_session_token",
+    "aws_security_token",
+];
+
+/// Stored in place of a secret value, so presence checks still work.
+const REDACTED: &str = "(redacted)";
+
+/// What Lunge shows from the AWS config and credentials files.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct SsoConfig {
+pub struct AwsConfig {
     /// Usable `[sso-session]` blocks in file order, each with its profiles.
     pub sessions: Vec<SsoSession>,
+    /// Profiles that authenticate with static access keys.
+    pub access_key_profiles: Vec<AccessKeyProfile>,
     /// Problems that hide a session or profile, in file order.
     pub issues: Vec<ConfigIssue>,
+}
+
+/// A profile with static access keys (an IAM user). Lunge knows only that
+/// keys exist and where; it never reads their values.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccessKeyProfile {
+    pub name: String,
+    /// The profile's default `region` from the config file, if set.
+    pub region: Option<String>,
+    /// Which file holds the keys. When both do, the CLI uses the
+    /// credentials file.
+    pub source: KeySource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeySource {
+    CredentialsFile,
+    ConfigFile,
 }
 
 /// One `[sso-session NAME]` block.
@@ -52,6 +90,9 @@ pub enum ConfigIssue {
     /// A profile using the legacy `sso_start_url`-in-profile layout, which
     /// Lunge doesn't support yet.
     LegacySsoProfile { profile: String },
+    /// The credentials file exists but couldn't be read or parsed, so
+    /// access-key profiles may be missing.
+    CredentialsFile(String),
 }
 
 impl fmt::Display for ConfigIssue {
@@ -69,6 +110,12 @@ impl fmt::Display for ConfigIssue {
                 "profile \"{profile}\" uses the legacy SSO layout (sso_start_url in the profile); \
                  move it to an [sso-session] block with `aws configure sso` to use it in Lunge"
             ),
+            Self::CredentialsFile(message) => {
+                write!(
+                    f,
+                    "credentials file: {message}; access-key profiles may be missing"
+                )
+            }
         }
     }
 }
@@ -151,35 +198,103 @@ fn resolve_config_path(
     }
 }
 
-/// Reads and parses the config file at `path`.
-pub fn load(path: &Path) -> Result<SsoConfig, ConfigError> {
-    let text = match std::fs::read_to_string(path) {
-        Ok(text) => text,
+/// The credentials file the AWS CLI would read: `AWS_SHARED_CREDENTIALS_FILE`
+/// if set, otherwise `~/.aws/credentials`.
+pub fn default_credentials_path() -> Option<PathBuf> {
+    let home = std::env::home_dir();
+    match std::env::var_os("AWS_SHARED_CREDENTIALS_FILE").filter(|v| !v.is_empty()) {
+        Some(value) => resolve_config_path(Some(value), home),
+        None => home.map(|h| h.join(".aws").join("credentials")),
+    }
+}
+
+/// Reads the config file at `config_path` and, if given, the profile names
+/// in the credentials file. A missing or broken credentials file is reported
+/// as an issue rather than an error, since SSO doesn't need it.
+pub fn load(config_path: &Path, credentials_path: Option<&Path>) -> Result<AwsConfig, ConfigError> {
+    let config_result = read_scrubbed(config_path, |text| {
+        let text = std::str::from_utf8(text).map_err(|_| ParseError {
+            line: 0,
+            message: "file is not valid UTF-8".into(),
+        })?;
+        parse_ini(text)
+    });
+    let config_sections = match config_result {
+        Ok(Ok(sections)) => sections,
+        Ok(Err(source)) => {
+            return Err(ConfigError::Parse {
+                path: config_path.to_path_buf(),
+                source,
+            });
+        }
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            return Err(ConfigError::NotFound(path.to_path_buf()));
+            return Err(ConfigError::NotFound(config_path.to_path_buf()));
         }
         Err(source) => {
             return Err(ConfigError::Io {
-                path: path.to_path_buf(),
+                path: config_path.to_path_buf(),
                 source,
             });
         }
     };
-    parse(&text).map_err(|source| ConfigError::Parse {
-        path: path.to_path_buf(),
-        source,
-    })
+
+    let mut issues = Vec::new();
+    let mut credential_profiles = Vec::new();
+    if let Some(path) = credentials_path {
+        match load_credential_profile_names(path) {
+            Ok(names) => credential_profiles = names,
+            Err(message) => issues.push(ConfigIssue::CredentialsFile(message)),
+        }
+    }
+
+    let mut config = classify(config_sections, &credential_profiles);
+    issues.append(&mut config.issues);
+    config.issues = issues;
+    Ok(config)
 }
 
-/// Parses AWS config file text.
-pub fn parse(text: &str) -> Result<SsoConfig, ParseError> {
+/// Names of credentials-file profiles that hold an access key.
+fn load_credential_profile_names(path: &Path) -> Result<Vec<String>, String> {
+    // NO CREDENTIAL CUSTODY: this file holds secret keys. parse_ini discards
+    // their values, and read_scrubbed zeroes the raw bytes afterwards.
+    let result = read_scrubbed(path, |text| match std::str::from_utf8(text) {
+        Ok(text) => parse_ini(text).map_err(|e| e.to_string()),
+        Err(_) => Err("file is not valid UTF-8".into()),
+    });
+    let sections = match result {
+        Ok(sections) => sections?,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(format!("can't read {}: {e}", path.display())),
+    };
+    Ok(sections
+        .into_iter()
+        .filter(|s| get(&s.entries, "aws_access_key_id").is_some())
+        .map(|s| s.name)
+        .collect())
+}
+
+/// Reads `path`, hands the bytes to `f`, then zeroes them before returning.
+fn read_scrubbed<T>(path: &Path, f: impl FnOnce(&[u8]) -> T) -> io::Result<T> {
+    let mut bytes = std::fs::read(path)?;
+    let result = f(&bytes);
+    bytes.fill(0);
+    std::hint::black_box(&bytes);
+    Ok(result)
+}
+
+/// Parses AWS config file text on its own (no credentials file).
+pub fn parse(text: &str) -> Result<AwsConfig, ParseError> {
+    Ok(classify(parse_ini(text)?, &[]))
+}
+
+fn classify(config_sections: Vec<IniSection>, credential_profiles: &[String]) -> AwsConfig {
     let mut sessions: Vec<(String, Vec<(String, String)>)> = Vec::new();
     let mut profiles: Vec<(String, Vec<(String, String)>)> = Vec::new();
 
     // Classify sections the way botocore's build_profile_map does. A later
     // section with the same resolved name replaces an earlier one in place
     // (e.g. `[default]` and `[profile default]`).
-    for section in parse_ini(text)? {
+    for section in config_sections {
         let target = if section.name.starts_with("profile") {
             section_name_arg(&section.name).map(|name| (&mut profiles, name))
         } else if section.name.starts_with("sso-session") {
@@ -197,7 +312,7 @@ pub fn parse(text: &str) -> Result<SsoConfig, ParseError> {
         }
     }
 
-    let mut config = SsoConfig::default();
+    let mut config = AwsConfig::default();
     let mut invalid_sessions = HashSet::new();
     for (name, entries) in &sessions {
         let start_url = get(entries, "sso_start_url");
@@ -221,6 +336,44 @@ pub fn parse(text: &str) -> Result<SsoConfig, ParseError> {
                 });
                 invalid_sessions.insert(name.as_str());
             }
+        }
+    }
+
+    let region_of = |name: &str| {
+        profiles
+            .iter()
+            .find(|(n, _)| n == name)
+            .and_then(|(_, entries)| get(entries, "region"))
+            .map(str::to_string)
+    };
+    let is_sso = |name: &str| {
+        profiles
+            .iter()
+            .any(|(n, entries)| n == name && get(entries, "sso_session").is_some())
+    };
+
+    // Access-key profiles: the credentials file first (the CLI prefers it),
+    // then keys placed directly in the config file. A profile that also has
+    // `sso_session` is shown as SSO, which the CLI tries first.
+    for name in credential_profiles {
+        if !is_sso(name) && !config.access_key_profiles.iter().any(|p| p.name == *name) {
+            config.access_key_profiles.push(AccessKeyProfile {
+                name: name.clone(),
+                region: region_of(name),
+                source: KeySource::CredentialsFile,
+            });
+        }
+    }
+    for (name, entries) in &profiles {
+        if get(entries, "aws_access_key_id").is_some()
+            && get(entries, "sso_session").is_none()
+            && !config.access_key_profiles.iter().any(|p| p.name == *name)
+        {
+            config.access_key_profiles.push(AccessKeyProfile {
+                name: name.clone(),
+                region: get(entries, "region").map(str::to_string),
+                source: KeySource::ConfigFile,
+            });
         }
     }
 
@@ -250,7 +403,7 @@ pub fn parse(text: &str) -> Result<SsoConfig, ParseError> {
         }
     }
 
-    Ok(config)
+    config
 }
 
 fn get<'a>(entries: &'a [(String, String)], key: &str) -> Option<&'a str> {
@@ -334,6 +487,10 @@ struct IniSection {
 /// full-line `#`/`;` comments only (no inline comments), lowercased keys,
 /// indented lines continue the previous value, and duplicate sections or keys
 /// are errors.
+///
+/// NO CREDENTIAL CUSTODY: values of [`SECRET_KEYS`] are replaced with
+/// [`REDACTED`] as they're read, and error messages never include line
+/// content (a malformed line could be a key).
 fn parse_ini(text: &str) -> Result<Vec<IniSection>, ParseError> {
     let mut sections: Vec<IniSection> = Vec::new();
     let mut seen_sections = HashSet::new();
@@ -351,10 +508,12 @@ fn parse_ini(text: &str) -> Result<Vec<IniSection>, ParseError> {
 
         if let Some(open) = value_indent
             && indent > open
-            && let Some((_, value)) = sections.last_mut().and_then(|s| s.entries.last_mut())
+            && let Some((key, value)) = sections.last_mut().and_then(|s| s.entries.last_mut())
         {
-            value.push('\n');
-            value.push_str(trimmed);
+            if !SECRET_KEYS.contains(&key.as_str()) {
+                value.push('\n');
+                value.push_str(trimmed);
+            }
             continue;
         }
 
@@ -363,7 +522,7 @@ fn parse_ini(text: &str) -> Result<Vec<IniSection>, ParseError> {
                 .rfind(']')
                 .map(|end| &rest[..end])
                 .filter(|name| !name.is_empty())
-                .ok_or_else(|| error(format!("malformed section header: {trimmed}")))?;
+                .ok_or_else(|| error("malformed section header (missing `]`)".into()))?;
             if !seen_sections.insert(name.to_string()) {
                 return Err(error(format!("section [{name}] appears more than once")));
             }
@@ -379,12 +538,16 @@ fn parse_ini(text: &str) -> Result<Vec<IniSection>, ParseError> {
             return Err(error("setting appears before any [section] header".into()));
         };
         let Some(split) = trimmed.find(['=', ':']) else {
-            return Err(error(format!("expected `key = value`, found: {trimmed}")));
+            return Err(error("expected `key = value` or a [section] header".into()));
         };
         let key = trimmed[..split].trim().to_lowercase();
-        let value = trimmed[split + 1..].trim().to_string();
+        let value = if SECRET_KEYS.contains(&key.as_str()) {
+            REDACTED.to_string()
+        } else {
+            trimmed[split + 1..].trim().to_string()
+        };
         if key.is_empty() {
-            return Err(error(format!("missing key before `=`: {trimmed}")));
+            return Err(error("missing key before `=`".into()));
         }
         if section.entries.iter().any(|(k, _)| *k == key) {
             return Err(error(format!(
@@ -402,7 +565,7 @@ fn parse_ini(text: &str) -> Result<Vec<IniSection>, ParseError> {
 mod tests {
     use super::*;
 
-    fn session<'a>(config: &'a SsoConfig, name: &str) -> &'a SsoSession {
+    fn session<'a>(config: &'a AwsConfig, name: &str) -> &'a SsoSession {
         config
             .sessions
             .iter()
@@ -474,12 +637,9 @@ sso_role_name = Admin
 
     #[test]
     fn empty_and_non_sso_configs_have_no_sessions() {
-        assert_eq!(parse("").unwrap(), SsoConfig::default());
-        let config = parse(
-            "[default]\nregion = us-east-1\noutput = json\n\n[profile keys]\naws_access_key_id = AKIA\n",
-        )
-        .unwrap();
-        assert_eq!(config, SsoConfig::default());
+        assert_eq!(parse("").unwrap(), AwsConfig::default());
+        let config = parse("[default]\nregion = us-east-1\noutput = json\n").unwrap();
+        assert_eq!(config, AwsConfig::default());
     }
 
     #[test]
@@ -712,6 +872,133 @@ sso_session = b
     #[test]
     fn load_distinguishes_missing_file() {
         let missing = std::env::temp_dir().join("lunge-test-definitely-missing-config");
-        assert!(matches!(load(&missing), Err(ConfigError::NotFound(_))));
+        assert!(matches!(
+            load(&missing, None),
+            Err(ConfigError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn secret_values_are_never_retained() {
+        let config = parse(
+            "\
+[profile keys]
+aws_access_key_id = AKIAEXAMPLEKEYID
+aws_secret_access_key = SECRETVALUE
+    SECRETCONTINUATION
+aws_session_token = TOKENVALUE
+region = eu-central-1
+",
+        )
+        .unwrap();
+        let debug = format!("{config:?}");
+        for secret in [
+            "AKIAEXAMPLEKEYID",
+            "SECRETVALUE",
+            "SECRETCONTINUATION",
+            "TOKENVALUE",
+        ] {
+            assert!(!debug.contains(secret), "{secret} leaked: {debug}");
+        }
+        assert_eq!(
+            config.access_key_profiles,
+            [AccessKeyProfile {
+                name: "keys".into(),
+                region: Some("eu-central-1".into()),
+                source: KeySource::ConfigFile,
+            }]
+        );
+    }
+
+    #[test]
+    fn parse_errors_never_quote_file_content() {
+        for text in [
+            "[default]\nAKIASECRETLINE\n",
+            "[default]\n= AKIASECRETLINE\n",
+            "[AKIASECRETLINE\n",
+            "AKIASECRETLINE = x\n",
+        ] {
+            let err = parse(text).unwrap_err();
+            assert!(!err.to_string().contains("AKIASECRETLINE"), "{err}");
+        }
+    }
+
+    #[test]
+    fn credentials_file_profiles_are_merged_with_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config");
+        let credentials_path = dir.path().join("credentials");
+        std::fs::write(
+            &config_path,
+            "\
+[default]
+region = us-east-1
+[profile work]
+region = us-west-2
+[profile both]
+sso_session = s
+[sso-session s]
+sso_start_url = u
+sso_region = r
+",
+        )
+        .unwrap();
+        std::fs::write(
+            &credentials_path,
+            "\
+[default]
+aws_access_key_id = AKIAEXAMPLE1
+aws_secret_access_key = SECRET1
+[work]
+aws_access_key_id = AKIAEXAMPLE2
+aws_secret_access_key = SECRET2
+[both]
+aws_access_key_id = AKIAEXAMPLE3
+aws_secret_access_key = SECRET3
+[region-only]
+region = ap-south-1
+",
+        )
+        .unwrap();
+
+        let config = load(&config_path, Some(&credentials_path)).unwrap();
+
+        assert!(config.issues.is_empty(), "{:?}", config.issues);
+        assert_eq!(
+            config.access_key_profiles,
+            [
+                AccessKeyProfile {
+                    name: "default".into(),
+                    region: Some("us-east-1".into()),
+                    source: KeySource::CredentialsFile,
+                },
+                AccessKeyProfile {
+                    name: "work".into(),
+                    region: Some("us-west-2".into()),
+                    source: KeySource::CredentialsFile,
+                },
+            ]
+        );
+        assert_eq!(config.sessions[0].profiles[0].name, "both");
+        assert!(!format!("{config:?}").contains("SECRET"));
+    }
+
+    #[test]
+    fn credentials_file_problems_are_issues_not_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config");
+        std::fs::write(&config_path, "[default]\n").unwrap();
+
+        let missing = dir.path().join("no-credentials");
+        let config = load(&config_path, Some(&missing)).unwrap();
+        assert!(config.issues.is_empty());
+
+        let broken = dir.path().join("credentials");
+        std::fs::write(&broken, "aws_secret_access_key = SECRETBEFORESECTION\n").unwrap();
+        let config = load(&config_path, Some(&broken)).unwrap();
+        let [ConfigIssue::CredentialsFile(message)] = config.issues.as_slice() else {
+            panic!("{:?}", config.issues)
+        };
+        assert!(!message.contains("SECRET"), "{message}");
     }
 }
