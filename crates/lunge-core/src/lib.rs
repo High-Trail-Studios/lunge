@@ -1,6 +1,6 @@
 //! UI-agnostic core for Lunge.
 //!
-//! This crate will own AWS config parsing, SSO session state, triggering
+//! This crate owns AWS config parsing, SSO session state, triggering
 //! `aws sso login`, and console federation. It must never depend on a GUI
 //! toolkit; `lunge-gui` is a thin front end over it.
 //!
@@ -16,3 +16,5 @@
 //!
 //! Every code path that touches credential state must restate this invariant
 //! in a comment at the point of contact.
+
+pub mod config;
