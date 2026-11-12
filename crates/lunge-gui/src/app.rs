@@ -12,7 +12,7 @@ use lunge_core::time::OffsetDateTime;
 use lunge_core::{Inventory, SessionEntry};
 
 use crate::style;
-use crate::theme::Theme;
+use crate::theme::{self, Theme};
 
 /// Re-read the config and token cache this often, so states and countdowns
 /// don't go stale while the window sits open. Each pass reads one small file
@@ -22,7 +22,32 @@ const RELOAD_INTERVAL: Duration = Duration::from_secs(30);
 /// How often to check on a running `aws sso login`.
 const LOGIN_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
+/// How often to redraw while idle, so "Updated …" stays roughly current.
+const IDLE_REPAINT_INTERVAL: Duration = Duration::from_secs(10);
+
 const SETUP_COMMAND: &str = "aws configure sso";
+
+/// Zoom levels offered in the status bar. Ctrl +/-/0 also work.
+const ZOOM_PRESETS: [f32; 4] = [1.0, 1.25, 1.5, 2.0];
+const ZOOM_RANGE: std::ops::RangeInclusive<f32> = 0.5..=3.0;
+
+/// Display preferences remembered between launches, in eframe's app
+/// storage (`~/.local/share/lunge/app.ron` on Linux). Holds no AWS data.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+struct Prefs {
+    zoom: f32,
+    theme: theme::Choice,
+}
+
+impl Default for Prefs {
+    fn default() -> Self {
+        Self {
+            zoom: 1.0,
+            theme: theme::Choice::System,
+        }
+    }
+}
 
 pub struct LungeApp {
     inventory: Result<Inventory, String>,
@@ -36,6 +61,8 @@ pub struct LungeApp {
     theme: Theme,
     selection: Selection,
     aws_expanded: bool,
+    /// Mirrors the egui zoom factor (which Ctrl +/-/0 also change) for saving.
+    zoom: f32,
 }
 
 /// What the detail pane shows.
@@ -61,16 +88,24 @@ enum Action {
 }
 
 impl LungeApp {
-    pub fn new(ctx: &egui::Context) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        let prefs: Prefs = cc
+            .storage
+            .and_then(|s| eframe::get_value(s, eframe::APP_KEY))
+            .unwrap_or_default();
+        let zoom = prefs.zoom.clamp(*ZOOM_RANGE.start(), *ZOOM_RANGE.end());
+        let ctx = &cc.egui_ctx;
+        ctx.set_zoom_factor(zoom);
         let mut app = Self {
             inventory: load(),
             loaded_at: Instant::now(),
             cli: AwsCli::default(),
             login: None,
             notices: HashMap::new(),
-            theme: Theme::new(ctx),
+            theme: Theme::new(ctx, prefs.theme),
             selection: Selection::AddSession,
             aws_expanded: true,
+            zoom,
         };
         app.selection = app.fallback_selection();
         app
@@ -168,9 +203,25 @@ fn load() -> Result<Inventory, String> {
 }
 
 impl eframe::App for LungeApp {
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        let prefs = Prefs {
+            zoom: self.zoom,
+            theme: self.theme.choice(),
+        };
+        eframe::set_value(storage, eframe::APP_KEY, &prefs);
+    }
+
+    /// Only `Prefs` and the window geometry are saved; egui's internal UI
+    /// state stays in memory, so nothing derived from AWS files can end up
+    /// on disk.
+    fn persist_egui_memory(&self) -> bool {
+        false
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.poll_login();
         self.theme.update(ui.ctx());
+        self.zoom = ui.ctx().zoom_factor();
         if self.loaded_at.elapsed() >= RELOAD_INTERVAL {
             self.reload();
         }
@@ -192,6 +243,8 @@ impl eframe::App for LungeApp {
                 });
             });
         });
+
+        egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
 
         let mut actions = Vec::new();
         egui::Panel::left("sidebar")
@@ -222,8 +275,49 @@ impl eframe::App for LungeApp {
         if self.login.is_some() {
             ctx.request_repaint_after(LOGIN_POLL_INTERVAL);
         } else {
-            ctx.request_repaint_after(RELOAD_INTERVAL);
+            ctx.request_repaint_after(IDLE_REPAINT_INTERVAL);
         }
+    }
+}
+
+// ---------------------------------------------------------------- status bar
+
+impl LungeApp {
+    fn status_bar(&mut self, ui: &mut Ui) {
+        ui.horizontal(|ui| {
+            let seconds = self.loaded_at.elapsed().as_secs();
+            let updated = if seconds < 10 {
+                "Updated just now".to_string()
+            } else {
+                format!("Updated {}s ago", seconds / 10 * 10)
+            };
+            ui.label(RichText::new(updated).weak())
+                .on_hover_text(format!(
+                    "Lunge re-reads your AWS files every {}s",
+                    RELOAD_INTERVAL.as_secs()
+                ));
+
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let ctx = ui.ctx().clone();
+                let current = ctx.zoom_factor();
+                // Right-to-left layout: add presets largest first.
+                for zoom in ZOOM_PRESETS.iter().rev() {
+                    let selected = (current - zoom).abs() < 0.01;
+                    let label = format!("{:.0}%", zoom * 100.0);
+                    if ui
+                        .selectable_label(selected, label)
+                        .on_hover_text("Ctrl + and Ctrl - zoom too; Ctrl 0 resets")
+                        .clicked()
+                    {
+                        ctx.set_zoom_factor(*zoom);
+                    }
+                }
+                if !ZOOM_PRESETS.iter().any(|z| (current - z).abs() < 0.01) {
+                    ui.label(RichText::new(format!("{:.0}%", current * 100.0)).strong());
+                }
+                ui.label(RichText::new("Zoom").weak());
+            });
+        });
     }
 }
 

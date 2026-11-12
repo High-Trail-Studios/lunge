@@ -69,6 +69,9 @@ pixels, names, logos, icons, strings, or layout.
 ## Conventions
 
 - Targets: macOS and Linux. Windows is out of scope.
+- Preferences: eframe `persistence` saves only the `Prefs` struct (zoom,
+  theme) and window geometry; `persist_egui_memory` is off so no UI state
+  derived from AWS files reaches disk. Never put AWS data in `Prefs`.
 - Renderer: eframe with `glow`, not the default `wgpu` (smaller binary and
   build). Revisit only with a concrete reason.
 - Toolchain pinned in `rust-toolchain.toml`; dependencies locked in

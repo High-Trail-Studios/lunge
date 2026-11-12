@@ -19,6 +19,6 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "Lunge",
         options,
-        Box::new(|cc| Ok(Box::new(app::LungeApp::new(&cc.egui_ctx)))),
+        Box::new(|cc| Ok(Box::new(app::LungeApp::new(cc)))),
     )
 }

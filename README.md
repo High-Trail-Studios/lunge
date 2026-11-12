@@ -19,6 +19,10 @@ seconds, and **Refresh** does it on demand.
 **Add SSO session** shows the `aws configure sso` command to run: the AWS CLI
 creates sessions, and Lunge picks them up.
 
+The status bar shows when Lunge last re-read your files and has zoom presets
+(100% to 200%; Ctrl + / Ctrl - / Ctrl 0 work too), which help on high-DPI
+screens running at 1x scaling.
+
 | State | Meaning |
 |---|---|
 | **Live** | The AWS CLI has a valid token for this session. |
@@ -51,6 +55,12 @@ holds your credentials:
   call. They are never written to disk, logged, or cached.
 
 If you uninstall Lunge, your AWS CLI setup is exactly as it was.
+
+**The one file Lunge writes** is its display preferences (zoom, theme, and
+window size; nothing from your AWS files): `~/.local/share/lunge/app.ron` on
+Linux, `~/Library/Application Support/lunge/app.ron` on macOS. Uninstalling
+the package doesn't remove per-user files, so delete that folder to remove
+every trace of Lunge.
 
 ## What Lunge is (and isn't)
 

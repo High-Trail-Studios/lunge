@@ -26,6 +26,8 @@ eframe = { version = "0.37.0", default-features = false, features = [
   "clipboard",
   "default_fonts",
   "glow",
+  # Remembers zoom, theme, and window size (no AWS data) between launches.
+  "persistence",
   "wayland",
   "x11",
 ] }

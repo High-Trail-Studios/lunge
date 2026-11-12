@@ -1,13 +1,14 @@
 //! Light/dark theme: follows the OS by default, with a manual override that
-//! lasts for the session (Lunge persists no settings).
+//! is remembered between launches (see `app::Prefs`).
 
 use std::sync::mpsc::{self, Receiver};
 
 use dark_light::Mode;
 use eframe::egui::{self, ThemePreference};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Choice {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum Choice {
+    #[default]
     System,
     Light,
     Dark,
@@ -31,14 +32,18 @@ pub struct Theme {
 }
 
 impl Theme {
-    pub fn new(ctx: &egui::Context) -> Self {
+    pub fn new(ctx: &egui::Context, choice: Choice) -> Self {
         let theme = Self {
-            choice: Choice::System,
+            choice,
             os_mode: dark_light::detect().ok(),
             os_changes: watch_os_theme(ctx.clone()),
         };
         theme.apply(ctx);
         theme
+    }
+
+    pub fn choice(&self) -> Choice {
+        self.choice
     }
 
     /// Picks up OS theme changes reported since the last frame.
