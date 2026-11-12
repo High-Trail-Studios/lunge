@@ -18,6 +18,15 @@ pub fn status_color(state: &SessionState, dark: bool) -> Color32 {
     Color32::from_rgb(r, g, b)
 }
 
+pub fn success_color(dark: bool) -> Color32 {
+    status_color(
+        &SessionState::Live {
+            expires_at: lunge_core::time::OffsetDateTime::UNIX_EPOCH,
+        },
+        dark,
+    )
+}
+
 pub fn error_color(dark: bool) -> Color32 {
     status_color(
         &SessionState::Expired {
