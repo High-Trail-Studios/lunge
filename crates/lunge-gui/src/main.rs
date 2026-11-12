@@ -2,6 +2,7 @@
 
 mod app;
 mod style;
+mod theme;
 
 use eframe::egui;
 
@@ -18,6 +19,6 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "Lunge",
         options,
-        Box::new(|_cc| Ok(Box::new(app::LungeApp::new()))),
+        Box::new(|cc| Ok(Box::new(app::LungeApp::new(&cc.egui_ctx)))),
     )
 }

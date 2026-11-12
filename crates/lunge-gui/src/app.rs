@@ -11,6 +11,7 @@ use lunge_core::time::OffsetDateTime;
 use lunge_core::{Inventory, SessionEntry};
 
 use crate::style;
+use crate::theme::Theme;
 
 /// Re-read the config and token cache this often, so states and countdowns
 /// don't go stale while the window sits open. Each pass reads one small file
@@ -29,6 +30,7 @@ pub struct LungeApp {
     login: Option<LoginProcess>,
     /// The latest login outcome per session name.
     notices: HashMap<String, Notice>,
+    theme: Theme,
 }
 
 enum Notice {
@@ -44,13 +46,14 @@ enum Action {
 }
 
 impl LungeApp {
-    pub fn new() -> Self {
+    pub fn new(ctx: &egui::Context) -> Self {
         Self {
             inventory: load(),
             loaded_at: Instant::now(),
             cli: AwsCli::default(),
             login: None,
             notices: HashMap::new(),
+            theme: Theme::new(ctx),
         }
     }
 
@@ -106,6 +109,7 @@ fn load() -> Result<Inventory, String> {
 impl eframe::App for LungeApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.poll_login();
+        self.theme.update(ui.ctx());
         if self.loaded_at.elapsed() >= RELOAD_INTERVAL {
             self.reload();
         }
@@ -114,6 +118,7 @@ impl eframe::App for LungeApp {
             ui.horizontal(|ui| {
                 ui.heading("Lunge");
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    self.theme.picker(ui);
                     if ui
                         .button("Refresh")
                         .on_hover_text("Re-read ~/.aws/config and the SSO token cache")
