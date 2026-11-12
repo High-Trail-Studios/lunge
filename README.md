@@ -4,8 +4,27 @@ A small desktop app for AWS SSO sessions. See every SSO profile, know at a
 glance which sessions are live or expired, re-login in one click, and open the
 AWS console for a role in one click.
 
-> **Status: pre-alpha.** The workspace, CI, and packaging are in place; the
-> features below are being built. Nothing here is usable yet.
+> **Status: pre-alpha.** Listing sessions with their state, one-click login,
+> and light/dark theming work. Opening the AWS console (M2) is not built
+> yet. Expect rough edges; see [Limitations](#limitations).
+
+## What you see
+
+Each `[sso-session]` in your AWS config is a card showing its state, how
+long until it expires, and the profiles that use it. The window re-reads
+everything every 30 seconds, and **Refresh** does it on demand.
+
+| State | Meaning |
+|---|---|
+| **Live** | The AWS CLI has a valid token for this session. |
+| **Renewable** | The token expired, but the CLI holds a refresh token, so its next use of the session will probably renew it without a browser. Lunge can't confirm this ahead of time: how long the refresh token lasts is set by your identity provider and isn't recorded locally. |
+| **Expired** | The token expired and can't be renewed; log in again. |
+| **Not logged in** | No token cached for this session. |
+| **Unreadable** | A cache file exists but couldn't be parsed. |
+
+**Log in** runs `aws sso login --sso-session <name>`. The CLI opens your
+browser; if it doesn't, the card shows the URL to open. Lunge confirms
+success by re-reading the CLI's token cache, not just by the exit code.
 
 ## No credential custody
 
@@ -35,6 +54,20 @@ it.
 IAM-user access keys, SAML sessions, or role chaining. It does not edit your
 AWS config, route credentials to other tools, or replace the AWS CLI; it
 requires it.
+
+## Limitations
+
+- **Legacy SSO profiles aren't shown.** Profiles with `sso_start_url`
+  directly in the profile (no `sso_session`) appear under "config issues".
+  Run `aws configure sso` to move them to an `[sso-session]` block.
+- **One login at a time.** Each login opens a browser tab to approve, so
+  other Log in buttons are disabled while one runs.
+- **Config parsing follows the AWS CLI exactly**, including its quirks: an
+  indented line continues the previous value, `#` mid-line is part of the
+  value, and duplicate sections make the whole file invalid (as they do for
+  the CLI).
+- **`AWS_CONFIG_FILE` is honored, with `~` expanded**, but `$VAR`s inside it
+  are not.
 
 ## Platforms
 
