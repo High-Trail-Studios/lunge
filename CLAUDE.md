@@ -2,14 +2,15 @@
 
 Lunge is a desktop GUI over the AWS CLI for AWS SSO sessions: list sessions,
 show live/expired state, re-login in one click, open the console for a role.
+It also lists access-key ("single account") profiles, read-only for now.
 (Briefly called "Luge" during planning; the name is Lunge everywhere now.)
 
 ## Invariant: no credential custody
 
 Lunge never stores, encrypts, or persists credentials or tokens. The AWS CLI
-owns all token persistence. Lunge only reads `~/.aws/config` and
-`~/.aws/sso/cache/` and shells out to the `aws` CLI to act. It never writes to
-either.
+owns all token persistence. Lunge only reads `~/.aws/config`,
+`~/.aws/sso/cache/`, and profile names in `~/.aws/credentials`, and shells
+out to the `aws` CLI to act. It never writes to any of them.
 
 The one exception is console federation: short-lived role credentials are held
 in memory only for the federation HTTP call and are never written to disk,
@@ -29,6 +30,12 @@ change that would weaken it needs an explicit decision from the owner.
   refresh token. An expired access token with a refresh token present is not
   the same as a dead session; model that distinction rather than reporting it
   as "expired".
+- **Access-key profiles:** credentials stay in the CLI's own files
+  (`~/.aws/credentials`, or `~/.aws/config`); Lunge never keeps its own copy
+  (owner decision). The INI parser replaces values of `aws_access_key_id`,
+  `aws_secret_access_key`, `aws_session_token`, and `aws_security_token` with
+  a marker as it reads them, and parse errors never quote file content.
+  Future sign-in for these profiles must also go through the CLI.
 - **Role credentials for federation:** use
   `aws configure export-credentials --profile <name>` (output read from
   stdout, held in memory). Never use `aws sso get-role-credentials
@@ -42,13 +49,17 @@ change that would weaken it needs an explicit decision from the owner.
   logic here.
 - `crates/lunge-gui`: the `lunge` binary. A thin egui front end; no business
   logic.
-- Keep the provider boundary clean (AWS today), but build only AWS SSO. Don't
-  add a provider abstraction until a second provider is actually being built.
+- Keep the provider boundary clean (AWS today). The sidebar is a provider
+  accordion with only AWS in it; don't add Azure/GCP placeholders or a
+  provider abstraction until a second provider is actually being built.
+- No AWS logo (trademark); the AWS header uses text plus a generic orange.
 
 ## Scope (v1)
 
-AWS SSO only. No IAM-user, SAML, or role-chaining session types. No config
-editing, credential routing, or general-purpose engine.
+AWS SSO sessions, plus a read-only list of access-key profiles (sign-in for
+those is deferred). No SAML or role-chaining session types. No config
+editing (users add sessions with `aws configure sso`), credential routing,
+or general-purpose engine.
 
 ## Not a fork
 

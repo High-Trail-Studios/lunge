@@ -10,9 +10,14 @@ AWS console for a role in one click.
 
 ## What you see
 
-Each `[sso-session]` in your AWS config is a card showing its state, how
-long until it expires, and the profiles that use it. The window re-reads
-everything every 30 seconds, and **Refresh** does it on demand.
+The sidebar lists your AWS **SSO sessions** (each `[sso-session]` in your AWS
+config, with its state) and **single accounts** (profiles with access keys).
+Select an SSO session to see its state, how long until it expires, and the
+accounts and roles that use it. The window re-reads everything every 30
+seconds, and **Refresh** does it on demand.
+
+**Add SSO session** shows the `aws configure sso` command to run: the AWS CLI
+creates sessions, and Lunge picks them up.
 
 | State | Meaning |
 |---|---|
@@ -23,7 +28,7 @@ everything every 30 seconds, and **Refresh** does it on demand.
 | **Unreadable** | A cache file exists but couldn't be parsed. |
 
 **Log in** runs `aws sso login --sso-session <name>`. The CLI opens your
-browser; if it doesn't, the card shows the URL to open. Lunge confirms
+browser; if it doesn't, Lunge shows the URL to open. Lunge confirms
 success by re-reading the CLI's token cache, not just by the exit code.
 
 ## No credential custody
@@ -32,8 +37,12 @@ Lunge is a visual front end over the AWS CLI. It is designed so that it never
 holds your credentials:
 
 - **The AWS CLI owns all token persistence.** Lunge only *reads* the CLI's own
-  state (`~/.aws/config` and `~/.aws/sso/cache/`) and shells out to the CLI
-  (`aws sso login`) to act. It never writes to either location.
+  state (`~/.aws/config`, `~/.aws/sso/cache/`, and profile names from
+  `~/.aws/credentials`) and shells out to the CLI (`aws sso login`) to act. It
+  never writes to any of them.
+- **Lunge never reads secret values.** Access keys, session tokens, and SSO
+  tokens are skipped as files are parsed; only their presence is noted (that
+  a profile has keys, that a session has a token and when it expires).
 - **Lunge never stores, encrypts, or persists credentials or tokens.** There
   is no Lunge vault, keychain entry, or config file holding secrets.
 - **One narrow exception: opening the console.** To build a console sign-in
@@ -50,9 +59,10 @@ discontinued Leapp in *workflow* (the familiar session-list interaction) but
 shares no code, name, or visual identity with it, and is not affiliated with
 it.
 
-**v1 scope is AWS SSO (IAM Identity Center) only.** Lunge does not manage
-IAM-user access keys, SAML sessions, or role chaining. It does not edit your
-AWS config, route credentials to other tools, or replace the AWS CLI; it
+**v1 is built around AWS SSO (IAM Identity Center).** Access-key profiles are
+listed, but Lunge can't sign in or open the console with them yet. SAML and
+role chaining aren't supported. Lunge does not edit your AWS config or
+credentials, route credentials to other tools, or replace the AWS CLI; it
 requires it.
 
 ## Limitations
@@ -60,14 +70,17 @@ requires it.
 - **Legacy SSO profiles aren't shown.** Profiles with `sso_start_url`
   directly in the profile (no `sso_session`) appear under "config issues".
   Run `aws configure sso` to move them to an `[sso-session]` block.
+- **Single accounts are listed only.** Access-key profiles (from
+  `~/.aws/credentials`, or keys placed in `~/.aws/config`) appear under Single
+  accounts; there's no sign-in or console action for them yet.
 - **One login at a time.** Each login opens a browser tab to approve, so
   other Log in buttons are disabled while one runs.
 - **Config parsing follows the AWS CLI exactly**, including its quirks: an
   indented line continues the previous value, `#` mid-line is part of the
   value, and duplicate sections make the whole file invalid (as they do for
   the CLI).
-- **`AWS_CONFIG_FILE` is honored, with `~` expanded**, but `$VAR`s inside it
-  are not.
+- **`AWS_CONFIG_FILE` and `AWS_SHARED_CREDENTIALS_FILE` are honored, with `~`
+  expanded**, but `$VAR`s inside them are not.
 
 ## Platforms
 

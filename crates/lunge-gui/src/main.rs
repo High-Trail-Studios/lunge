@@ -12,8 +12,8 @@ fn main() -> eframe::Result {
             .with_title("Lunge")
             // Matches StartupWMClass in assets/lunge.desktop.
             .with_app_id("lunge")
-            .with_inner_size([560.0, 680.0])
-            .with_min_inner_size([380.0, 300.0]),
+            .with_inner_size([880.0, 600.0])
+            .with_min_inner_size([600.0, 360.0]),
         ..Default::default()
     };
     eframe::run_native(

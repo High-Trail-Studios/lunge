@@ -4,6 +4,12 @@ use eframe::egui::Color32;
 use lunge_core::cache::SessionState;
 use lunge_core::time::Duration;
 
+/// Accent for a provider's sidebar header. A generic orange (deliberately
+/// not AWS's brand color, so nothing implies endorsement); text on it is
+/// near-black for contrast in both themes.
+pub const PROVIDER_ACCENT: Color32 = Color32::from_rgb(232, 135, 48);
+pub const PROVIDER_ACCENT_HOVER: Color32 = Color32::from_rgb(242, 155, 75);
+
 /// Status color, tuned per theme for contrast. Always shown next to a text
 /// label: color is never the only signal.
 pub fn status_color(state: &SessionState, dark: bool) -> Color32 {
