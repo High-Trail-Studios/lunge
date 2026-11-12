@@ -20,6 +20,7 @@
 pub mod cache;
 pub mod config;
 pub mod login;
+pub mod rename;
 
 use std::path::{Path, PathBuf};
 

@@ -18,7 +18,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 /// Keys whose values are secrets. Never stored; see the module docs.
-const SECRET_KEYS: [&str; 4] = [
+pub(crate) const SECRET_KEYS: [&str; 4] = [
     "aws_access_key_id",
     "aws_secret_access_key",
     "aws_session_token",
@@ -417,7 +417,7 @@ fn get<'a>(entries: &'a [(String, String)], key: &str) -> Option<&'a str> {
 /// The NAME in `[profile NAME]` / `[sso-session NAME]`. Like botocore, the
 /// header is shell-split and must yield exactly two words; otherwise the
 /// section is ignored.
-fn section_name_arg(header: &str) -> Option<String> {
+pub(crate) fn section_name_arg(header: &str) -> Option<String> {
     let mut words = shell_split(header)?;
     if words.len() == 2 { words.pop() } else { None }
 }
@@ -478,9 +478,11 @@ fn shell_split(s: &str) -> Option<Vec<String>> {
     Some(words)
 }
 
-struct IniSection {
-    name: String,
-    entries: Vec<(String, String)>,
+pub(crate) struct IniSection {
+    pub(crate) name: String,
+    /// 1-based line number of the `[...]` header.
+    pub(crate) line: usize,
+    pub(crate) entries: Vec<(String, String)>,
 }
 
 /// INI parsing with Python `RawConfigParser` defaults: `=` or `:` delimiters,
@@ -491,7 +493,7 @@ struct IniSection {
 /// NO CREDENTIAL CUSTODY: values of [`SECRET_KEYS`] are replaced with
 /// [`REDACTED`] as they're read, and error messages never include line
 /// content (a malformed line could be a key).
-fn parse_ini(text: &str) -> Result<Vec<IniSection>, ParseError> {
+pub(crate) fn parse_ini(text: &str) -> Result<Vec<IniSection>, ParseError> {
     let mut sections: Vec<IniSection> = Vec::new();
     let mut seen_sections = HashSet::new();
     // Indentation of the line that opened the current value, while one is open.
@@ -528,6 +530,7 @@ fn parse_ini(text: &str) -> Result<Vec<IniSection>, ParseError> {
             }
             sections.push(IniSection {
                 name: name.to_string(),
+                line,
                 entries: Vec::new(),
             });
             value_indent = None;
