@@ -107,8 +107,14 @@ Lunge creates no AWS resources and makes no billable AWS API calls.
 ## Install
 
 Packages are not published yet. `.deb` and `.rpm` packages are built by CI on
-every push to `main` (see the workflow run's artifacts). A signed macOS `.dmg`
-will follow.
+every push to `main` (see the workflow run's artifacts).
+
+**macOS (interim):** the **Build macOS** workflow (Actions tab -> Run
+workflow, or `gh workflow run build-macos.yml`) produces an unsigned universal
+binary as the `lunge-macos-universal` artifact; its `README-macos.txt` covers
+clearing Gatekeeper's quarantine flag. It runs on demand rather than on every
+push because macOS runner minutes are expensive on private repos. A signed and
+notarized `.dmg` will replace it.
 
 ## Build from source
 

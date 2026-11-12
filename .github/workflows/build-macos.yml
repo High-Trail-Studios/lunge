@@ -1,0 +1,67 @@
+name: Build macOS
+
+# On demand (Actions tab -> "Build macOS" -> Run workflow, or
+# `gh workflow run build-macos.yml`) and on version tags. Not on every push:
+# macOS runner minutes cost 10x Linux minutes on private repos, and the CI
+# workflow already checks macOS on every push.
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Installs the toolchain pinned in rust-toolchain.toml, plus both Mac targets.
+      - run: rustup toolchain install && rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: cargo build --release --locked -p lunge-gui --target aarch64-apple-darwin
+      - run: cargo build --release --locked -p lunge-gui --target x86_64-apple-darwin
+
+      - name: Package universal binary
+        run: |
+          set -euo pipefail
+          out=dist/lunge-macos
+          mkdir -p "$out"
+          lipo -create -output "$out/lunge" \
+            target/aarch64-apple-darwin/release/lunge \
+            target/x86_64-apple-darwin/release/lunge
+          # Ad-hoc signature only: lets the binary run on Apple silicon, but
+          # it is NOT a Developer ID signature and is not notarized (M3).
+          codesign --force --sign - "$out/lunge"
+          lipo -info "$out/lunge"
+          codesign --verify --verbose "$out/lunge"
+          # Only system libraries should appear here.
+          otool -L "$out/lunge"
+          cp LICENSE NOTICE packaging/macos/README-macos.txt "$out/"
+          # A tarball keeps the executable bit, which artifact zips drop.
+          tar -C dist -czf dist/lunge-macos-universal.tar.gz lunge-macos
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: lunge-macos-universal
+          path: dist/lunge-macos-universal.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+      # After upload, so a smoke-test problem never withholds the download.
+      # Confirms the binary starts and keeps a window open for 8 seconds.
+      - name: Smoke-test launch
+        run: |
+          dist/lunge-macos/lunge &
+          pid=$!
+          sleep 8
+          if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid"
+            echo "lunge started and stayed running"
+          else
+            wait "$pid"; echo "lunge exited early (status $?)"; exit 1
+          fi
