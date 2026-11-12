@@ -66,6 +66,12 @@ change that would weaken it needs an explicit decision from the owner.
   `crates/lunge-gui/assets/logo-toolbar.png` (cropped, tagline removed, 128px
   tall); regenerate it from the master rather than editing it. The header bar
   is brand navy in both themes so the logo sits on its own background.
+- Transparent logos: `assets/brand/logo_transparent_black.png` and
+  `_white.png` ("Lun" in black or white) are kept as supplied. They carry a
+  baked-in ~1px dark outline that shows on light backgrounds, so the README
+  uses edge-cleaned, 1200px-wide copies in `assets/brand/readme/`
+  (`logo-on-light.png`, `logo-on-dark.png`), switched by a `<picture>`
+  element on the reader's light/dark preference.
 
 ## Scope (v1)
 

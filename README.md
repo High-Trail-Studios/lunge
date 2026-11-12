@@ -1,4 +1,9 @@
-# Lunge
+<h1 align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/readme/logo-on-dark.png">
+    <img alt="Lunge by High Trail Studios" src="assets/brand/readme/logo-on-light.png" width="560">
+  </picture>
+</h1>
 
 A small desktop app for AWS SSO sessions. See every SSO profile, know at a
 glance which sessions are live or expired, re-login in one click, and open the
