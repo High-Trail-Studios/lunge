@@ -28,6 +28,12 @@ const IDLE_REPAINT_INTERVAL: Duration = Duration::from_secs(10);
 
 const SETUP_COMMAND: &str = "aws configure sso";
 
+/// Toolbar logo: "Lunge" wordmark and mark on brand navy, rendered 4x
+/// oversize so it stays sharp when zoomed. Derived from
+/// assets/brand/logo.png (cropped, tagline removed, scaled down).
+const LOGO_PNG: &[u8] = include_bytes!("../assets/logo-toolbar.png");
+const LOGO_HEIGHT: f32 = 32.0;
+
 /// Zoom levels offered in the status bar. Ctrl +/-/0 also work.
 const ZOOM_PRESETS: [f32; 4] = [1.0, 1.25, 1.5, 2.0];
 const ZOOM_RANGE: std::ops::RangeInclusive<f32> = 0.5..=3.0;
@@ -66,6 +72,7 @@ pub struct LungeApp {
     zoom: f32,
     /// The open rename dialog, with the session whose profile it renames.
     rename: Option<(String, RenameDialog)>,
+    logo: egui::TextureHandle,
 }
 
 /// What the detail pane shows.
@@ -115,6 +122,7 @@ impl LungeApp {
             aws_expanded: true,
             zoom,
             rename: None,
+            logo: load_logo(ctx),
         };
         app.selection = app.fallback_selection();
         app
@@ -235,6 +243,15 @@ impl LungeApp {
     }
 }
 
+fn load_logo(ctx: &egui::Context) -> egui::TextureHandle {
+    let rgba = image::load_from_memory_with_format(LOGO_PNG, image::ImageFormat::Png)
+        .expect("bundled logo is a valid PNG")
+        .to_rgba8();
+    let size = [rgba.width() as usize, rgba.height() as usize];
+    let image = egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
+    ctx.load_texture("logo", image, egui::TextureOptions::LINEAR)
+}
+
 fn load() -> Result<Inventory, String> {
     // NO CREDENTIAL CUSTODY: read-only view of the AWS CLI's files.
     Inventory::load_default(OffsetDateTime::now_utc()).map_err(|e| e.to_string())
@@ -264,9 +281,20 @@ impl eframe::App for LungeApp {
             self.reload();
         }
 
-        egui::Panel::top("toolbar").show(ui, |ui| {
+        // Brand navy in both themes: the logo is drawn on navy, so the header
+        // matches it, and widgets in it use dark styling for contrast.
+        let header = egui::Frame::new()
+            .fill(style::BRAND_NAVY)
+            .inner_margin(egui::Margin::symmetric(10, 6));
+        egui::Panel::top("toolbar").frame(header).show(ui, |ui| {
+            ui.style_mut().visuals = egui::Visuals::dark();
             ui.horizontal(|ui| {
-                ui.heading("Lunge");
+                let size = self.logo.size_vec2();
+                let logo_size = egui::vec2(size.x * LOGO_HEIGHT / size.y, LOGO_HEIGHT);
+                ui.add(
+                    egui::Image::new((self.logo.id(), logo_size))
+                        .alt_text("Lunge by High Trail Studios"),
+                );
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     self.theme.picker(ui);
                     if ui

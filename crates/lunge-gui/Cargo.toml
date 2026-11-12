@@ -17,6 +17,8 @@ lunge-core.workspace = true
 eframe.workspace = true
 dark-light.workspace = true
 serde.workspace = true
+# Decodes the bundled logo; already in the tree (via the clipboard), PNG only.
+image = { version = "0.25.10", default-features = false, features = ["png"] }
 
 [lints]
 workspace = true

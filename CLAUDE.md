@@ -61,6 +61,11 @@ change that would weaken it needs an explicit decision from the owner.
   accordion with only AWS in it; don't add Azure/GCP placeholders or a
   provider abstraction until a second provider is actually being built.
 - No AWS logo (trademark); the AWS header uses text plus a generic orange.
+- Brand: the master logo is `assets/brand/logo.png` (drawn on navy
+  `#141B35`). The toolbar uses a derived copy,
+  `crates/lunge-gui/assets/logo-toolbar.png` (cropped, tagline removed, 128px
+  tall); regenerate it from the master rather than editing it. The header bar
+  is brand navy in both themes so the logo sits on its own background.
 
 ## Scope (v1)
 

@@ -4,6 +4,9 @@ use eframe::egui::Color32;
 use lunge_core::cache::SessionState;
 use lunge_core::time::Duration;
 
+/// The logo's background navy, used for the header bar in both themes.
+pub const BRAND_NAVY: Color32 = Color32::from_rgb(20, 27, 53);
+
 /// Accent for a provider's sidebar header. A generic orange (deliberately
 /// not AWS's brand color, so nothing implies endorsement); text on it is
 /// near-black for contrast in both themes.
