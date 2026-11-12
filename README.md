@@ -43,7 +43,8 @@ holds your credentials:
 - **The AWS CLI owns all token persistence.** Lunge only *reads* the CLI's own
   state (`~/.aws/config`, `~/.aws/sso/cache/`, and profile names from
   `~/.aws/credentials`) and shells out to the CLI (`aws sso login`) to act. It
-  never writes to any of them.
+  never writes the token cache or the credentials file, and writes the config
+  file only when you rename a profile (see below).
 - **Lunge never reads secret values.** Access keys, session tokens, and SSO
   tokens are skipped as files are parsed; only their presence is noted (that
   a profile has keys, that a session has a token and when it expires).
@@ -54,9 +55,21 @@ holds your credentials:
   federation endpoint. Those credentials live in memory only for that one HTTP
   call. They are never written to disk, logged, or cached.
 
-If you uninstall Lunge, your AWS CLI setup is exactly as it was.
+If you uninstall Lunge, your AWS CLI setup is exactly as it was, apart from
+any profiles you chose to rename.
 
-**The one file Lunge writes** is its display preferences (zoom, theme, and
+**Renaming a profile** (the **Rename** button on an account) is the one
+change Lunge makes to AWS files, because the AWS CLI has no rename command.
+It changes only that profile's `[profile NAME]` line in `~/.aws/config`:
+you see the exact before and after first, a timestamped backup
+(`config.lunge-backup-<time>`) is saved next to the file, and the new file is
+swapped in only once fully written. Lunge refuses the rename if the name is
+taken, if another profile refers to this one by `source_profile`, if the
+file changed since the preview, or if your config file contains access keys
+(so it never copies secrets). Scripts or `AWS_PROFILE` settings using the old
+name need updating by hand.
+
+**Lunge's own file** is its display preferences (zoom, theme, and
 window size; nothing from your AWS files): `~/.local/share/lunge/app.ron` on
 Linux, `~/Library/Application Support/lunge/app.ron` on macOS. Uninstalling
 the package doesn't remove per-user files, so delete that folder to remove
@@ -71,9 +84,10 @@ it.
 
 **v1 is built around AWS SSO (IAM Identity Center).** Access-key profiles are
 listed, but Lunge can't sign in or open the console with them yet. SAML and
-role chaining aren't supported. Lunge does not edit your AWS config or
-credentials, route credentials to other tools, or replace the AWS CLI; it
-requires it.
+role chaining aren't supported. Apart from renaming a profile, Lunge does not
+edit your AWS config or credentials; it doesn't create sessions (the AWS CLI
+does), route credentials to other tools, or replace the AWS CLI; it requires
+it.
 
 ## Limitations
 

@@ -10,7 +10,15 @@ It also lists access-key ("single account") profiles, read-only for now.
 Lunge never stores, encrypts, or persists credentials or tokens. The AWS CLI
 owns all token persistence. Lunge only reads `~/.aws/config`,
 `~/.aws/sso/cache/`, and profile names in `~/.aws/credentials`, and shells
-out to the `aws` CLI to act. It never writes to any of them.
+out to the `aws` CLI to act. It never writes the cache or credentials file.
+
+**Prefer the CLI (owner rule).** Lunge should use the AWS CLI for anything
+the CLI can do, and touch AWS files directly only when the CLI has no way.
+The one direct write today is renaming an SSO profile (`lunge_core::rename`;
+the CLI has no rename): it changes only the `[profile NAME]` header line,
+previews first, backs up, writes atomically, re-parses to verify, and
+refuses files containing access keys. Don't add other direct writes without
+the owner's say-so.
 
 The one exception is console federation: short-lived role credentials are held
 in memory only for the federation HTTP call and are never written to disk,
@@ -58,8 +66,8 @@ change that would weaken it needs an explicit decision from the owner.
 
 AWS SSO sessions, plus a read-only list of access-key profiles (sign-in for
 those is deferred). No SAML or role-chaining session types. No config
-editing (users add sessions with `aws configure sso`), credential routing,
-or general-purpose engine.
+editing beyond the profile rename (users add sessions with
+`aws configure sso`), credential routing, or general-purpose engine.
 
 ## Not a fork
 

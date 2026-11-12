@@ -11,6 +11,7 @@ use lunge_core::login::{AwsCli, LoginError, LoginProcess};
 use lunge_core::time::OffsetDateTime;
 use lunge_core::{Inventory, SessionEntry};
 
+use crate::rename_dialog::{self, RenameDialog};
 use crate::style;
 use crate::theme::{self, Theme};
 
@@ -63,6 +64,8 @@ pub struct LungeApp {
     aws_expanded: bool,
     /// Mirrors the egui zoom factor (which Ctrl +/-/0 also change) for saving.
     zoom: f32,
+    /// The open rename dialog, with the session whose profile it renames.
+    rename: Option<(String, RenameDialog)>,
 }
 
 /// What the detail pane shows.
@@ -85,6 +88,11 @@ enum Action {
     Select(Selection),
     Login(String),
     CancelLogin,
+    /// Rename a profile of the given session.
+    Rename {
+        session: String,
+        profile: String,
+    },
 }
 
 impl LungeApp {
@@ -106,6 +114,7 @@ impl LungeApp {
             selection: Selection::AddSession,
             aws_expanded: true,
             zoom,
+            rename: None,
         };
         app.selection = app.fallback_selection();
         app
@@ -193,6 +202,35 @@ impl LungeApp {
                     process.cancel();
                 }
             }
+            Action::Rename { session, profile } => {
+                if let Ok(inventory) = &self.inventory {
+                    let dialog = RenameDialog::new(inventory.config_path.clone(), profile);
+                    self.rename = Some((session, dialog));
+                }
+            }
+        }
+    }
+
+    fn show_rename_dialog(&mut self, ctx: &egui::Context) {
+        let Some((session, dialog)) = &mut self.rename else {
+            return;
+        };
+        match dialog.show(ctx) {
+            rename_dialog::Outcome::Open => {}
+            rename_dialog::Outcome::Cancelled => self.rename = None,
+            rename_dialog::Outcome::Renamed {
+                old_name,
+                new_name,
+                backup,
+            } => {
+                let notice = Notice::Success(format!(
+                    "Renamed {old_name} to {new_name}. Backup: {}",
+                    backup.display()
+                ));
+                self.notices.insert(session.clone(), notice);
+                self.rename = None;
+                self.reload();
+            }
         }
     }
 }
@@ -270,6 +308,7 @@ impl eframe::App for LungeApp {
         for action in actions {
             self.apply(action);
         }
+        self.show_rename_dialog(ui.ctx());
 
         let ctx = ui.ctx();
         if self.login.is_some() {
@@ -646,7 +685,12 @@ impl SessionDetail<'_> {
             );
         }
         for profile in &session.profiles {
-            profile_row(ui, profile);
+            if profile_row(ui, profile) {
+                action = Some(Action::Rename {
+                    session: session.name.clone(),
+                    profile: profile.name.clone(),
+                });
+            }
             ui.add_space(4.0);
         }
         action
@@ -737,12 +781,22 @@ fn state_detail(state: &SessionState, now: OffsetDateTime) -> String {
     }
 }
 
-fn profile_row(ui: &mut Ui, profile: &SsoProfile) {
+/// One account (profile) row. Returns whether Rename was clicked.
+fn profile_row(ui: &mut Ui, profile: &SsoProfile) -> bool {
+    let mut rename = false;
     egui::Frame::group(ui.style())
         .inner_margin(8.0)
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.label(RichText::new(&profile.name).strong());
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(&profile.name).strong());
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    rename = ui
+                        .small_button("Rename")
+                        .on_hover_text("Give this profile your own name in ~/.aws/config")
+                        .clicked();
+                });
+            });
             let mut details = Vec::new();
             if let Some(account) = &profile.account_id {
                 details.push(format!("account {account}"));
@@ -758,4 +812,5 @@ fn profile_row(ui: &mut Ui, profile: &SsoProfile) {
             }
             ui.label(RichText::new(details.join("  ·  ")).weak());
         });
+    rename
 }
