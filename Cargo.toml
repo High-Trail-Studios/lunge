@@ -17,6 +17,7 @@ serde_json = "1.0.154"
 sha1_smol = "1.0.1"
 time = { version = "0.3.55", features = ["parsing"] }
 tempfile = "3.27.0"
+dark-light = "3.0.0"
 # glow (OpenGL) instead of the default wgpu renderer: a session list doesn't
 # need wgpu, and glow keeps the binary and build noticeably smaller.
 eframe = { version = "0.37.0", default-features = false, features = [
