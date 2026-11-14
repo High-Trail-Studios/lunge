@@ -253,6 +253,62 @@ pub fn load(config_path: &Path, credentials_path: Option<&Path>) -> Result<AwsCo
     Ok(config)
 }
 
+/// Every profile name in use: all `[profile …]`/`[default]` sections in the
+/// config file plus every section of the credentials file (keys or not).
+/// Used to refuse a new profile name that would collide.
+pub fn all_profile_names(
+    config_path: &Path,
+    credentials_path: Option<&Path>,
+) -> Result<Vec<String>, ConfigError> {
+    let mut names = Vec::new();
+    match read_scrubbed(config_path, |b| std::str::from_utf8(b).ok().map(parse_ini)) {
+        Ok(Some(Ok(sections))) => {
+            for s in sections {
+                if s.name == "default" {
+                    names.push("default".to_string());
+                } else if s.name.starts_with("profile")
+                    && let Some(name) = section_name_arg(&s.name)
+                {
+                    names.push(name);
+                }
+            }
+        }
+        Ok(Some(Err(source))) => {
+            return Err(ConfigError::Parse {
+                path: config_path.to_path_buf(),
+                source,
+            });
+        }
+        Ok(None) => {
+            return Err(ConfigError::Parse {
+                path: config_path.to_path_buf(),
+                source: ParseError {
+                    line: 0,
+                    message: "file is not valid UTF-8".into(),
+                },
+            });
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(source) => {
+            return Err(ConfigError::Io {
+                path: config_path.to_path_buf(),
+                source,
+            });
+        }
+    }
+    if let Some(path) = credentials_path {
+        // NO CREDENTIAL CUSTODY: section names only; parse_ini masks values.
+        if let Ok(Some(Ok(sections))) =
+            read_scrubbed(path, |b| std::str::from_utf8(b).ok().map(parse_ini))
+        {
+            names.extend(sections.into_iter().map(|s| s.name));
+        }
+    }
+    names.sort();
+    names.dedup();
+    Ok(names)
+}
+
 /// Names of credentials-file profiles that hold an access key.
 fn load_credential_profile_names(path: &Path) -> Result<Vec<String>, String> {
     // NO CREDENTIAL CUSTODY: this file holds secret keys. parse_ini discards

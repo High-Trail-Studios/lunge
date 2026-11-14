@@ -7,6 +7,11 @@
 //! only whether they are present is kept. The raw file bytes are zeroed as
 //! soon as parsing finishes (best effort; the allocator and OS may still hold
 //! copies, so this narrows exposure rather than guaranteeing erasure).
+//!
+//! One owner-approved exception: [`read_access_token`] loads a Live session's
+//! access token for [`crate::accounts`] to list the session's accounts (the
+//! AWS CLI can only do that with the token on its command line or in a
+//! file). The token lives in a [`Secret`] for those requests only.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -137,6 +142,69 @@ impl CacheEntry {
             }
         }
     }
+}
+
+/// A secret held in memory only: never `Display`ed, redacted in `Debug`, and
+/// zeroed when dropped (best effort, as above).
+pub(crate) struct Secret(Vec<u8>);
+
+impl Secret {
+    pub(crate) fn new(value: String) -> Self {
+        Self(value.into_bytes())
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        // Only ever built from a String, so always valid UTF-8.
+        std::str::from_utf8(&self.0).unwrap_or_default()
+    }
+}
+
+impl fmt::Debug for Secret {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Secret(redacted)")
+    }
+}
+
+impl Drop for Secret {
+    fn drop(&mut self) {
+        self.0.fill(0);
+        std::hint::black_box(&self.0);
+    }
+}
+
+/// Reads a Live session's SSO access token from the CLI cache.
+///
+/// NO CREDENTIAL CUSTODY (owner-approved exception): only
+/// [`crate::accounts`] calls this, to list the session's accounts and roles.
+/// The token stays in memory as a [`Secret`] for those requests: it is never
+/// logged, written, cached, or passed on a command line. Fails unless the
+/// session is Live, so an expired token is never sent anywhere.
+pub(crate) fn read_access_token(
+    cache_dir: &Path,
+    session_name: &str,
+    now: OffsetDateTime,
+) -> Result<Secret, SessionState> {
+    let state = session_state(cache_dir, session_name, now);
+    if !matches!(state, SessionState::Live { .. }) {
+        return Err(state);
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct TokenOnly {
+        access_token: String,
+    }
+
+    let path = cache_file_for_session(cache_dir, session_name);
+    let mut bytes = std::fs::read(&path)
+        .map_err(|e| SessionState::Unreadable(format!("can't read {}: {e}", path.display())))?;
+    let parsed = serde_json::from_slice::<TokenOnly>(&bytes);
+    bytes.fill(0);
+    std::hint::black_box(&bytes);
+    drop(bytes);
+    parsed
+        .map(|t| Secret::new(t.access_token))
+        .map_err(|_| SessionState::Unreadable("cache entry has no access token".into()))
 }
 
 /// RFC 3339 (what current CLIs and SDKs write), plus the `...UTC` suffix
@@ -278,6 +346,26 @@ mod tests {
                 "{json:?}"
             );
         }
+    }
+
+    #[test]
+    fn access_token_is_only_returned_for_live_sessions() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = cache_file_for_session(dir.path(), "work");
+        fs::write(&path, entry("2026-11-12T13:00:00Z", "2027-01-01T00:00:00Z")).unwrap();
+        let token = read_access_token(dir.path(), "work", now()).unwrap();
+        assert_eq!(token.as_str(), "PLACEHOLDER-ACCESS");
+        assert_eq!(format!("{token:?}"), "Secret(redacted)");
+
+        fs::write(&path, entry("2026-11-12T11:00:00Z", "2027-01-01T00:00:00Z")).unwrap();
+        assert!(matches!(
+            read_access_token(dir.path(), "work", now()),
+            Err(SessionState::Renewable { .. })
+        ));
+        assert!(matches!(
+            read_access_token(dir.path(), "missing", now()),
+            Err(SessionState::NotLoggedIn)
+        ));
     }
 
     #[test]

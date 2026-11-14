@@ -31,8 +31,8 @@ const OUTPUT_DRAIN_GRACE: Duration = Duration::from_millis(500);
 /// How to invoke the AWS CLI.
 #[derive(Debug, Clone)]
 pub struct AwsCli {
-    program: PathBuf,
-    leading_args: Vec<OsString>,
+    pub(crate) program: PathBuf,
+    pub(crate) leading_args: Vec<OsString>,
 }
 
 impl Default for AwsCli {
@@ -47,6 +47,19 @@ impl AwsCli {
         Self {
             program: program.into(),
             leading_args: Vec::new(),
+        }
+    }
+
+    /// A stand-in CLI for tests: runs `script` with /bin/sh. (Going through
+    /// sh avoids ETXTBSY races from exec'ing a freshly written file while
+    /// other test threads fork.)
+    #[cfg(all(test, unix))]
+    pub(crate) fn test_script(dir: &Path, script: &str) -> Self {
+        let path = dir.join("fake-aws.sh");
+        std::fs::write(&path, script).unwrap();
+        Self {
+            program: "/bin/sh".into(),
+            leading_args: vec![path.into()],
         }
     }
 
@@ -270,16 +283,8 @@ mod tests {
     use super::*;
     use std::time::{Duration, Instant};
 
-    /// Runs `script` with /bin/sh in place of the real CLI. (Going through
-    /// sh avoids ETXTBSY races from exec'ing a freshly written file while
-    /// other test threads fork.)
     fn fake_cli(dir: &Path, script: &str) -> AwsCli {
-        let path = dir.join("fake-aws.sh");
-        std::fs::write(&path, script).unwrap();
-        AwsCli {
-            program: "/bin/sh".into(),
-            leading_args: vec![path.into()],
-        }
+        AwsCli::test_script(dir, script)
     }
 
     fn token_json(expires_at: OffsetDateTime) -> String {

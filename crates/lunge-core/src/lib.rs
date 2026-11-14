@@ -17,9 +17,12 @@
 //! Every code path that touches credential state must restate this invariant
 //! in a comment at the point of contact.
 
+pub mod accounts;
 pub mod cache;
 pub mod config;
 pub mod login;
+pub mod naming;
+pub mod profiles;
 pub mod rename;
 
 use std::path::{Path, PathBuf};
