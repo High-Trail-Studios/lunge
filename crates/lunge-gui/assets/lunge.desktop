@@ -3,6 +3,7 @@ Type=Application
 Name=Lunge
 Comment=See, refresh, and open AWS SSO sessions
 Exec=lunge
+Icon=lunge
 Terminal=false
 Categories=Development;Utility;
 StartupWMClass=lunge

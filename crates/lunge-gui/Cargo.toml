@@ -46,6 +46,8 @@ libwayland-egl1, libegl1, libgl1"""
 assets = [
   ["target/release/lunge", "usr/bin/", "755"],
   ["assets/lunge.desktop", "usr/share/applications/", "644"],
+  ["assets/icon.png", "usr/share/icons/hicolor/512x512/apps/lunge.png", "644"],
+  ["assets/icon-256.png", "usr/share/icons/hicolor/256x256/apps/lunge.png", "644"],
   ["../../NOTICE", "usr/share/doc/lunge/", "644"],
 ]
 
@@ -55,6 +57,8 @@ summary = "Desktop GUI for AWS SSO sessions"
 assets = [
   { source = "target/release/lunge", dest = "/usr/bin/lunge", mode = "755" },
   { source = "assets/lunge.desktop", dest = "/usr/share/applications/lunge.desktop", mode = "644" },
+  { source = "assets/icon.png", dest = "/usr/share/icons/hicolor/512x512/apps/lunge.png", mode = "644" },
+  { source = "assets/icon-256.png", dest = "/usr/share/icons/hicolor/256x256/apps/lunge.png", mode = "644" },
   { source = "../../LICENSE", dest = "/usr/share/licenses/lunge/LICENSE", mode = "644", doc = true },
   { source = "../../NOTICE", dest = "/usr/share/licenses/lunge/NOTICE", mode = "644", doc = true },
 ]

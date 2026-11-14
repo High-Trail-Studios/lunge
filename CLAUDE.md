@@ -80,6 +80,12 @@ change that would weaken it needs an explicit decision from the owner.
   `crates/lunge-gui/assets/logo-toolbar.png` (cropped, tagline removed, 128px
   tall); regenerate it from the master rather than editing it. The header bar
   is brand navy in both themes so the logo sits on its own background.
+- App icon: `assets/brand/make_icon.py` (Pillow) builds it from
+  `assets/brand/logo_transparent_notext.png`: the logo on a brand-navy
+  rounded square on Apple's icon grid. It writes `assets/brand/icon-1024.png`
+  (master, for a future `.app`) and `crates/lunge-gui/assets/icon.png` (512px,
+  built into the binary as the Dock/window icon) and `icon-256.png` (Linux
+  hicolor). Rerun the script rather than editing the outputs.
 - Transparent logos: `assets/brand/logo_transparent_black.png` and
   `_white.png` ("Lun" in black or white) are kept as supplied. They carry a
   baked-in ~1px dark outline that shows on light backgrounds, so the README
@@ -119,4 +125,4 @@ pixels, names, logos, icons, strings, or layout.
   tag `vX.Y.Z` with all three plus `SHA256SUMS`. Pushes without a version
   bump don't release (macOS minutes are expensive on a private repo).
 - Work is tracked in Linear (project P-BRI-10); M0–M4 milestones, tickets
-  BRI-160 to BRI-181.
+  from BRI-160 on.
