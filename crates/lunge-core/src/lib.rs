@@ -37,6 +37,7 @@ use config::{AccessKeyProfile, ConfigError, ConfigIssue, SsoSession};
 #[derive(Debug, Clone)]
 pub struct Inventory {
     pub config_path: PathBuf,
+    pub credentials_path: Option<PathBuf>,
     pub cache_dir: PathBuf,
     pub sessions: Vec<SessionEntry>,
     pub access_key_profiles: Vec<AccessKeyProfile>,
@@ -80,6 +81,7 @@ impl Inventory {
             .collect();
         Ok(Self {
             config_path: config_path.to_path_buf(),
+            credentials_path: credentials_path.map(Path::to_path_buf),
             cache_dir: cache_dir.to_path_buf(),
             sessions,
             access_key_profiles: config.access_key_profiles,

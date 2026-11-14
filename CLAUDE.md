@@ -20,9 +20,21 @@ previews first, backs up, writes atomically, re-parses to verify, and
 refuses files containing access keys. Don't add other direct writes without
 the owner's say-so.
 
-The one exception is console federation: short-lived role credentials are held
-in memory only for the federation HTTP call and are never written to disk,
-logged, or cached.
+Two in-memory exceptions, both owner-approved:
+
+- **Console federation:** short-lived role credentials are held in memory only
+  for the federation HTTP call and are never written to disk, logged, or
+  cached.
+- **Listing accounts and roles** (`lunge_core::accounts`): the AWS CLI's
+  `aws sso list-accounts`/`list-account-roles` accept the access token only on
+  the command line (visible via `ps`) or from a file on disk, not stdin, so
+  Lunge calls the same SSO portal endpoints itself. The token is read only
+  from a Live session (`cache::read_access_token`, crate-private), kept in a
+  zeroing, redacted `Secret`, and sent only in the request header to
+  `portal.sso.<region>.amazonaws.com`. Nothing else may call
+  `read_access_token`. The fetched account list stays in memory too.
+- Creating a profile for a listed account goes through the CLI
+  (`aws configure set`, `lunge_core::profiles`), not a direct file write.
 
 Comment this invariant at every point the code touches credential state. Any
 change that would weaken it needs an explicit decision from the owner.
@@ -30,9 +42,11 @@ change that would weaken it needs an explicit decision from the owner.
 ### Decided details
 
 - **Reading the SSO cache:** cache files contain `accessToken`,
-  `refreshToken`, and `clientSecret`. Deserialize only the non-secret fields
-  needed for state (e.g. `startUrl`, `region`, `expiresAt`); never declare the
-  secret fields in Lunge's types, so they are never loaded into Lunge memory.
+  `refreshToken`, and `clientSecret`. For session state, deserialize only the
+  non-secret fields (e.g. `startUrl`, `region`, `expiresAt`); the secret
+  fields are `IgnoredAny`. The only exception is `read_access_token` for
+  account listing (above); `refreshToken` and `clientSecret` are never
+  loaded.
 - **Session state is not just `expiresAt`:** with `sso-session` configs the
   access token lasts about an hour and the CLI silently refreshes it using the
   refresh token. An expired access token with a refresh token present is not

@@ -2,15 +2,18 @@
 //! sessions and access-key profiles, and a detail pane for the selection.
 
 use std::collections::HashMap;
+use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Align, Color32, Layout, RichText, Sense, Ui};
+use lunge_core::accounts::{self, AccountRole, AccountRow};
 use lunge_core::cache::SessionState;
-use lunge_core::config::{AccessKeyProfile, KeySource, SsoProfile};
+use lunge_core::config::{AccessKeyProfile, KeySource};
 use lunge_core::login::{AwsCli, LoginError, LoginProcess};
 use lunge_core::time::OffsetDateTime;
 use lunge_core::{Inventory, SessionEntry};
 
+use crate::create_dialog::{self, CreateProfileDialog};
 use crate::rename_dialog::{self, RenameDialog};
 use crate::style;
 use crate::theme::{self, Theme};
@@ -72,7 +75,20 @@ pub struct LungeApp {
     zoom: f32,
     /// The open rename dialog, with the session whose profile it renames.
     rename: Option<(String, RenameDialog)>,
+    /// The open "name this account" dialog, with its session.
+    create: Option<(String, CreateProfileDialog)>,
+    /// Each session's full account list from AWS, fetched while it's Live.
+    /// Kept in memory only; never saved.
+    accounts: HashMap<String, Accounts>,
+    /// Filter text for the selected session's account list.
+    account_filter: String,
     logo: egui::TextureHandle,
+}
+
+enum Accounts {
+    Loading(Receiver<Result<Vec<AccountRole>, String>>),
+    Loaded(Vec<AccountRole>),
+    Failed(String),
 }
 
 /// What the detail pane shows.
@@ -100,6 +116,14 @@ enum Action {
         session: String,
         profile: String,
     },
+    /// Create a profile for an account role that has none.
+    NameAccount {
+        session: String,
+        account_id: String,
+        account_name: String,
+        role_name: String,
+    },
+    RefreshAccounts(String),
 }
 
 impl LungeApp {
@@ -122,6 +146,9 @@ impl LungeApp {
             aws_expanded: true,
             zoom,
             rename: None,
+            create: None,
+            accounts: HashMap::new(),
+            account_filter: String::new(),
             logo: load_logo(ctx),
         };
         app.selection = app.fallback_selection();
@@ -196,14 +223,64 @@ impl LungeApp {
             Err(LoginError::Cancelled) => Notice::Info("Login cancelled.".into()),
             Err(e) => Notice::Failure(e.to_string()),
         };
+        // A fresh login can change what the session may access.
+        self.accounts.remove(&session);
         self.notices.insert(session, notice);
         self.login = None;
         self.reload();
     }
 
+    /// Starts listing the selected session's accounts if it's Live and
+    /// hasn't been listed yet.
+    fn ensure_accounts(&mut self, ctx: &egui::Context) {
+        let (Ok(inventory), Selection::Session(name)) = (&self.inventory, &self.selection) else {
+            return;
+        };
+        if self.accounts.contains_key(name) {
+            return;
+        }
+        let Some(entry) = inventory.sessions.iter().find(|e| e.session.name == *name) else {
+            return;
+        };
+        if !matches!(entry.state, SessionState::Live { .. }) {
+            return;
+        }
+        let (tx, rx) = mpsc::channel();
+        let session = entry.session.clone();
+        let cache_dir = inventory.cache_dir.clone();
+        let ctx = ctx.clone();
+        // NO CREDENTIAL CUSTODY (owner-approved exception): the token is
+        // read and used inside list_account_roles only; see lunge_core::accounts.
+        std::thread::spawn(move || {
+            let result =
+                accounts::list_account_roles(&session, &cache_dir).map_err(|e| e.to_string());
+            let _ = tx.send(result);
+            ctx.request_repaint();
+        });
+        self.accounts.insert(name.clone(), Accounts::Loading(rx));
+    }
+
+    fn poll_accounts(&mut self) {
+        for state in self.accounts.values_mut() {
+            if let Accounts::Loading(rx) = state
+                && let Ok(result) = rx.try_recv()
+            {
+                *state = match result {
+                    Ok(list) => Accounts::Loaded(list),
+                    Err(e) => Accounts::Failed(e),
+                };
+            }
+        }
+    }
+
     fn apply(&mut self, action: Action) {
         match action {
-            Action::Select(selection) => self.selection = selection,
+            Action::Select(selection) => {
+                if selection != self.selection {
+                    self.account_filter.clear();
+                }
+                self.selection = selection;
+            }
             Action::Login(session) => self.start_login(session),
             Action::CancelLogin => {
                 if let Some(process) = &mut self.login {
@@ -215,6 +292,54 @@ impl LungeApp {
                     let dialog = RenameDialog::new(inventory.config_path.clone(), profile);
                     self.rename = Some((session, dialog));
                 }
+            }
+            Action::NameAccount {
+                session,
+                account_id,
+                account_name,
+                role_name,
+            } => {
+                let Ok(inventory) = &self.inventory else {
+                    return;
+                };
+                let Some(entry) = inventory
+                    .sessions
+                    .iter()
+                    .find(|e| e.session.name == session)
+                else {
+                    return;
+                };
+                let dialog = CreateProfileDialog::new(
+                    self.cli.clone(),
+                    inventory.config_path.clone(),
+                    inventory.credentials_path.clone(),
+                    &entry.session,
+                    account_id,
+                    account_name,
+                    role_name,
+                );
+                self.create = Some((session, dialog));
+            }
+            Action::RefreshAccounts(session) => {
+                self.accounts.remove(&session);
+            }
+        }
+    }
+
+    fn show_create_dialog(&mut self, ctx: &egui::Context) {
+        let Some((session, dialog)) = &mut self.create else {
+            return;
+        };
+        match dialog.show(ctx) {
+            create_dialog::Outcome::Open => {}
+            create_dialog::Outcome::Cancelled => self.create = None,
+            create_dialog::Outcome::Created { name } => {
+                let notice = Notice::Success(format!(
+                    "Created profile {name}. Use it with --profile {name} or AWS_PROFILE={name}."
+                ));
+                self.notices.insert(session.clone(), notice);
+                self.create = None;
+                self.reload();
             }
         }
     }
@@ -275,6 +400,7 @@ impl eframe::App for LungeApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.poll_login();
+        self.poll_accounts();
         self.theme.update(ui.ctx());
         self.zoom = ui.ctx().zoom_factor();
         if self.loaded_at.elapsed() >= RELOAD_INTERVAL {
@@ -304,6 +430,7 @@ impl eframe::App for LungeApp {
                         )
                         .clicked()
                     {
+                        self.accounts.clear();
                         self.reload();
                     }
                 });
@@ -336,7 +463,9 @@ impl eframe::App for LungeApp {
         for action in actions {
             self.apply(action);
         }
+        self.ensure_accounts(ui.ctx());
         self.show_rename_dialog(ui.ctx());
+        self.show_create_dialog(ui.ctx());
 
         let ctx = ui.ctx();
         if self.login.is_some() {
@@ -560,20 +689,29 @@ fn sidebar_row(ui: &mut Ui, selected: bool, status: Option<Status>, text: &str) 
 // ---------------------------------------------------------------- detail
 
 impl LungeApp {
-    fn detail(&self, ui: &mut Ui) -> Option<Action> {
+    fn detail(&mut self, ui: &mut Ui) -> Option<Action> {
         ui.add_space(4.0);
-        let inventory = match &self.inventory {
-            Ok(inventory) => inventory,
+        let Self {
+            inventory,
+            selection,
+            login,
+            notices,
+            accounts,
+            account_filter,
+            ..
+        } = self;
+        let inventory = match inventory {
+            Ok(inventory) => &*inventory,
             Err(message) => {
                 load_error(ui, message);
-                if self.selection == Selection::AddSession {
+                if *selection == Selection::AddSession {
                     ui.add_space(16.0);
                     add_session_panel(ui);
                 }
                 return None;
             }
         };
-        match &self.selection {
+        match &*selection {
             Selection::AddSession => {
                 add_session_panel(ui);
                 None
@@ -583,13 +721,15 @@ impl LungeApp {
                     .sessions
                     .iter()
                     .find(|e| e.session.name == *name)?;
-                let login = self.login.as_ref();
+                let login = login.as_ref();
                 SessionDetail {
                     entry,
                     now: OffsetDateTime::now_utc(),
                     login: login.filter(|p| p.session() == entry.session.name),
                     other_login_running: login.is_some_and(|p| p.session() != entry.session.name),
-                    notice: self.notices.get(&entry.session.name),
+                    notice: notices.get(&entry.session.name),
+                    accounts: accounts.get(&entry.session.name),
+                    filter: account_filter,
                 }
                 .show(ui)
             }
@@ -677,10 +817,15 @@ struct SessionDetail<'a> {
     login: Option<&'a LoginProcess>,
     other_login_running: bool,
     notice: Option<&'a Notice>,
+    accounts: Option<&'a Accounts>,
+    filter: &'a mut String,
 }
 
+/// Show the account filter once a list is longer than this.
+const FILTER_THRESHOLD: usize = 6;
+
 impl SessionDetail<'_> {
-    fn show(&self, ui: &mut Ui) -> Option<Action> {
+    fn show(&mut self, ui: &mut Ui) -> Option<Action> {
         let mut action = None;
         let session = &self.entry.session;
         ui.horizontal(|ui| {
@@ -701,25 +846,111 @@ impl SessionDetail<'_> {
         }
 
         ui.add_space(14.0);
-        ui.label(RichText::new("ACCOUNTS").small().weak().strong());
-        ui.add_space(2.0);
-        if session.profiles.is_empty() {
-            ui.label(
-                RichText::new(
-                    "No profiles use this session yet. Run `aws configure sso` to add one.",
-                )
-                .weak()
-                .italics(),
-            );
-        }
-        for profile in &session.profiles {
-            if profile_row(ui, profile) {
-                action = Some(Action::Rename {
-                    session: session.name.clone(),
-                    profile: profile.name.clone(),
+        let live = matches!(self.entry.state, SessionState::Live { .. });
+        let dark = ui.visuals().dark_mode;
+        let listed = match self.accounts {
+            Some(Accounts::Loaded(list)) => Some(list.as_slice()),
+            _ => None,
+        };
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("ACCOUNTS").small().weak().strong());
+            match self.accounts {
+                Some(Accounts::Loading(_)) => {
+                    ui.spinner();
+                    ui.label(RichText::new("Listing your accounts…").weak().small());
+                }
+                Some(Accounts::Loaded(list)) => {
+                    let unnamed = accounts::account_rows(&session.profiles, Some(list))
+                        .iter()
+                        .filter(|r| r.profile.is_none())
+                        .count();
+                    let text = match unnamed {
+                        0 => format!("{} available, all named", list.len()),
+                        n => format!("{} available, {n} without a profile", list.len()),
+                    };
+                    ui.label(RichText::new(text).weak().small());
+                }
+                Some(Accounts::Failed(message)) => {
+                    ui.colored_label(style::error_color(dark), RichText::new(message).small());
+                }
+                None if !live => {
+                    ui.label(
+                        RichText::new("Log in to see every account and role you can use")
+                            .weak()
+                            .small(),
+                    );
+                }
+                None => {}
+            }
+            let loading = matches!(self.accounts, Some(Accounts::Loading(_)));
+            if live && !loading {
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui
+                        .small_button("Refresh list")
+                        .on_hover_text("Ask AWS again which accounts and roles you can use")
+                        .clicked()
+                    {
+                        action = Some(Action::RefreshAccounts(session.name.clone()));
+                    }
                 });
             }
+        });
+        ui.add_space(2.0);
+
+        let rows = accounts::account_rows(&session.profiles, listed);
+        if rows.is_empty() {
+            ui.label(
+                RichText::new("No profiles use this session yet. Log in to list your accounts, or run `aws configure sso`.")
+                    .weak()
+                    .italics(),
+            );
+        }
+        let filterable = rows.len() > FILTER_THRESHOLD;
+        if filterable {
+            ui.add(
+                egui::TextEdit::singleline(self.filter)
+                    .hint_text("Filter by profile, account, ID, or role")
+                    .desired_width(f32::INFINITY),
+            );
             ui.add_space(4.0);
+        }
+        // Only filter while the box is on screen, so hidden text can't hide rows.
+        let filter = if filterable {
+            self.filter.trim().to_lowercase()
+        } else {
+            String::new()
+        };
+        let mut shown = 0;
+        for row in rows
+            .iter()
+            .filter(|r| filter.is_empty() || row_matches(r, &filter))
+        {
+            shown += 1;
+            match account_row(ui, row, listed.is_some()) {
+                Some(RowClick::Rename(profile)) => {
+                    action = Some(Action::Rename {
+                        session: session.name.clone(),
+                        profile,
+                    });
+                }
+                Some(RowClick::Name) => {
+                    action = Some(Action::NameAccount {
+                        session: session.name.clone(),
+                        account_id: row.account_id.clone().unwrap_or_default(),
+                        account_name: row.account_name.clone().unwrap_or_default(),
+                        role_name: row.role_name.clone().unwrap_or_default(),
+                    });
+                }
+                None => {}
+            }
+            ui.add_space(4.0);
+        }
+        if shown == 0 && !rows.is_empty() {
+            ui.label(
+                RichText::new("No accounts match the filter.")
+                    .weak()
+                    .italics(),
+            );
         }
         action
     }
@@ -809,36 +1040,111 @@ fn state_detail(state: &SessionState, now: OffsetDateTime) -> String {
     }
 }
 
-/// One account (profile) row. Returns whether Rename was clicked.
-fn profile_row(ui: &mut Ui, profile: &SsoProfile) -> bool {
-    let mut rename = false;
+/// A small button with a drawn pencil before its label (egui's built-in
+/// fonts have no pencil glyph).
+fn pencil_button(ui: &mut Ui, label: &str) -> egui::Response {
+    let response = ui.add(egui::Button::new(format!("     {label}")).small());
+    let color = ui.style().interact(&response).fg_stroke.color;
+    let rect = response.rect;
+    let c = egui::pos2(rect.left() + 11.0, rect.center().y);
+    let s = 3.6;
+    // Body: a thick diagonal stroke; tip: a small triangle at the lower left.
+    let tail = c + egui::vec2(s, -s);
+    let neck = c + egui::vec2(-s * 0.45, s * 0.45);
+    let painter = ui.painter();
+    painter.line_segment([neck, tail], egui::Stroke::new(2.4, color));
+    let tip = c + egui::vec2(-s * 1.15, s * 1.15);
+    let n = egui::vec2(0.9, 0.9);
+    painter.add(egui::Shape::convex_polygon(
+        vec![neck - n, neck + n, tip],
+        color,
+        egui::Stroke::NONE,
+    ));
+    response
+}
+
+fn row_matches(row: &AccountRow, filter: &str) -> bool {
+    [
+        row.profile.as_ref().map(|p| p.name.as_str()),
+        row.account_name.as_deref(),
+        row.account_id.as_deref(),
+        row.role_name.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .any(|field| field.to_lowercase().contains(filter))
+}
+
+enum RowClick {
+    Rename(String),
+    Name,
+}
+
+/// One account role: its profile name (with Rename), or a muted "no profile
+/// name yet" with a pencil to create one.
+fn account_row(ui: &mut Ui, row: &AccountRow, have_listing: bool) -> Option<RowClick> {
+    let mut click = None;
     egui::Frame::group(ui.style())
         .inner_margin(8.0)
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
-                ui.label(RichText::new(&profile.name).strong());
+                match &row.profile {
+                    Some(profile) => {
+                        ui.label(RichText::new(&profile.name).strong());
+                    }
+                    None => {
+                        ui.label(RichText::new("No profile name yet").italics().weak());
+                    }
+                }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    rename = ui
-                        .small_button("Rename")
-                        .on_hover_text("Give this profile your own name in ~/.aws/config")
-                        .clicked();
+                    match &row.profile {
+                        Some(profile) => {
+                            if ui
+                                .small_button("Rename")
+                                .on_hover_text("Give this profile your own name in ~/.aws/config")
+                                .clicked()
+                            {
+                                click = Some(RowClick::Rename(profile.name.clone()));
+                            }
+                        }
+                        None => {
+                            if pencil_button(ui, "Name")
+                                .on_hover_text("Create a profile for this account and role")
+                                .clicked()
+                            {
+                                click = Some(RowClick::Name);
+                            }
+                        }
+                    }
                 });
             });
             let mut details = Vec::new();
-            if let Some(account) = &profile.account_id {
-                details.push(format!("account {account}"));
+            if let Some(name) = row.account_name.as_deref().filter(|n| !n.is_empty()) {
+                details.push(name.to_string());
             }
-            if let Some(role) = &profile.role_name {
+            if let Some(account) = &row.account_id {
+                details.push(account.clone());
+            }
+            if let Some(role) = &row.role_name {
                 details.push(role.clone());
             }
-            if let Some(region) = &profile.region {
-                details.push(region.clone());
+            if let Some(region) = row.profile.as_ref().and_then(|p| p.region.clone()) {
+                details.push(region);
             }
             if details.is_empty() {
                 details.push("token-only profile (no account or role)".into());
             }
             ui.label(RichText::new(details.join("  ·  ")).weak());
+            if have_listing && !row.listed && row.account_id.is_some() {
+                ui.label(
+                    RichText::new(
+                        "Not in your current AWS access list; access may have been removed.",
+                    )
+                    .small()
+                    .weak(),
+                );
+            }
         });
-    rename
+    click
 }

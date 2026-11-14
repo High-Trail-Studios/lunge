@@ -24,6 +24,14 @@ seconds, and **Refresh** does it on demand.
 **Add SSO session** shows the `aws configure sso` command to run: the AWS CLI
 creates sessions, and Lunge picks them up.
 
+**Every account you can use.** While a session is Live, Lunge asks AWS which
+accounts and roles it gives you and lists them all under **Accounts**.
+Account roles that already have a profile show its name; the rest show "No
+profile name yet" with a **Name** button, which suggests a name
+(`<session>-<account>-<role>`, e.g. `acme-dev-admin`) and creates the profile
+with `aws configure set` once you confirm. A filter appears for long lists.
+Profiles whose account role AWS no longer lists are flagged.
+
 The status bar shows when Lunge last re-read your files and has zoom presets
 (100% to 200%; Ctrl + / Ctrl - / Ctrl 0 work too), which help on high-DPI
 screens running at 1x scaling.
@@ -50,9 +58,16 @@ holds your credentials:
   `~/.aws/credentials`) and shells out to the CLI (`aws sso login`) to act. It
   never writes the token cache or the credentials file, and writes the config
   file only when you rename a profile (see below).
-- **Lunge never reads secret values.** Access keys, session tokens, and SSO
-  tokens are skipped as files are parsed; only their presence is noted (that
-  a profile has keys, that a session has a token and when it expires).
+- **Lunge never reads secret values**, with one exception below. Access keys,
+  session tokens, refresh tokens, and client secrets are skipped as files are
+  parsed; only their presence is noted.
+- **Exception: listing your accounts.** To ask AWS which accounts and roles a
+  Live session can use, Lunge reads that session's SSO access token from the
+  CLI cache and sends it only to the AWS SSO portal
+  (`portal.sso.<region>.amazonaws.com`), in memory, for those requests. It is
+  never logged, saved, or put on a command line. (The AWS CLI's own
+  `aws sso list-accounts` takes the token only on its command line, where
+  other users can see it, or from a file on disk.)
 - **Lunge never stores, encrypts, or persists credentials or tokens.** There
   is no Lunge vault, keychain entry, or config file holding secrets.
 - **One narrow exception: opening the console.** To build a console sign-in

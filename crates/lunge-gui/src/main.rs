@@ -1,6 +1,7 @@
 //! Lunge desktop app: a thin egui front end over `lunge-core`.
 
 mod app;
+mod create_dialog;
 mod rename_dialog;
 mod style;
 mod theme;

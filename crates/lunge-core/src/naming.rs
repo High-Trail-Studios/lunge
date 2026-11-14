@@ -40,6 +40,14 @@ pub fn suggest_profile_name(
     let session = slug(session);
     let role = role_part(role_name);
     let mut account = account_part(account_name);
+    // "acme" + "Acme Development" -> "acme-dev", not "acme-acme_dev".
+    if !session.is_empty() {
+        if let Some(rest) = account.strip_prefix(&format!("{session}_")) {
+            account = rest.to_string();
+        } else if account == session {
+            account.clear();
+        }
+    }
     let fixed = session.len() + role.len() + 2;
     if fixed + account.len() > MAX_LEN {
         account.truncate(MAX_LEN.saturating_sub(fixed).max(1));
@@ -150,6 +158,19 @@ mod tests {
         assert_eq!(
             suggest("work", "acme-sandbox", "PowerUserAccess"),
             "work-acme-sandbox-poweruser"
+        );
+    }
+
+    #[test]
+    fn drops_the_session_name_repeated_in_the_account_name() {
+        assert_eq!(
+            suggest("acme", "Acme Development", "AdministratorAccess"),
+            "acme-dev-admin"
+        );
+        assert_eq!(suggest("acme", "Acme", "ReadOnlyAccess"), "acme-readonly");
+        assert_eq!(
+            suggest("acme", "Acmecorp Prod", "ReadOnlyAccess"),
+            "acme-acmecorp_prod-readonly"
         );
     }
 
