@@ -35,6 +35,14 @@ Two in-memory exceptions, both owner-approved:
   `read_access_token`. The fetched account list stays in memory too.
 - Creating a profile for a listed account goes through the CLI
   (`aws configure set`, `lunge_core::profiles`), not a direct file write.
+- Adding an SSO session goes through the CLI too (`lunge_core::sessions`,
+  owner decision): `aws configure set` can't write `[sso-session]` blocks
+  (it writes a bogus `sso-session =` line under `[default]` and exits 0),
+  and `aws configure sso-session` has no flags, so Lunge pipes the four
+  answers (name, start URL, region, scopes) into its prompts. Taken names
+  and answers containing line breaks are refused first, and the block is
+  re-read afterwards to check the answers landed in the right keys. Don't
+  replace this with a direct write without the owner's say-so.
 
 Comment this invariant at every point the code touches credential state. Any
 change that would weaken it needs an explicit decision from the owner.
@@ -97,8 +105,9 @@ change that would weaken it needs an explicit decision from the owner.
 
 AWS SSO sessions, plus a read-only list of access-key profiles (sign-in for
 those is deferred). No SAML or role-chaining session types. No config
-editing beyond the profile rename (users add sessions with
-`aws configure sso`), credential routing, or general-purpose engine.
+editing beyond the profile rename and CLI-driven creation of sessions and
+profiles (no editing or deleting sessions), credential routing, or
+general-purpose engine.
 
 ## Not a fork
 
@@ -109,7 +118,7 @@ pixels, names, logos, icons, strings, or layout.
 
 - Targets: macOS and Linux. Windows is out of scope.
 - Preferences: eframe `persistence` saves only the `Prefs` struct (zoom,
-  theme) and window geometry; `persist_egui_memory` is off so no UI state
+  theme, CLI drawer open) and window geometry; `persist_egui_memory` is off so no UI state
   derived from AWS files reaches disk. Never put AWS data in `Prefs`.
 - Renderer: eframe with `glow`, not the default `wgpu` (smaller binary and
   build). Revisit only with a concrete reason.

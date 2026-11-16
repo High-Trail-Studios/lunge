@@ -8,11 +8,12 @@ use std::time::{Duration, Instant};
 use eframe::egui::{self, Align, Color32, Layout, RichText, Sense, Ui};
 use lunge_core::accounts::{self, AccountRole, AccountRow};
 use lunge_core::cache::SessionState;
-use lunge_core::config::{AccessKeyProfile, KeySource};
+use lunge_core::config::{self, AccessKeyProfile, ConfigIssue, KeySource};
 use lunge_core::login::{AwsCli, LoginError, LoginProcess};
 use lunge_core::time::OffsetDateTime;
 use lunge_core::{Inventory, SessionEntry};
 
+use crate::add_session::{self, AddSessionForm};
 use crate::create_dialog::{self, CreateProfileDialog};
 use crate::rename_dialog::{self, RenameDialog};
 use crate::style;
@@ -28,8 +29,6 @@ const LOGIN_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 /// How often to redraw while idle, so "Updated …" stays roughly current.
 const IDLE_REPAINT_INTERVAL: Duration = Duration::from_secs(10);
-
-const SETUP_COMMAND: &str = "aws configure sso";
 
 /// Toolbar logo: "Lunge" wordmark and mark on brand navy, rendered 4x
 /// oversize so it stays sharp when zoomed. Derived from
@@ -48,6 +47,8 @@ const ZOOM_RANGE: std::ops::RangeInclusive<f32> = 0.5..=3.0;
 struct Prefs {
     zoom: f32,
     theme: theme::Choice,
+    /// Whether the Add SSO session pane shows its CLI drawer.
+    show_cli: bool,
 }
 
 impl Default for Prefs {
@@ -55,6 +56,7 @@ impl Default for Prefs {
         Self {
             zoom: 1.0,
             theme: theme::Choice::System,
+            show_cli: false,
         }
     }
 }
@@ -82,6 +84,9 @@ pub struct LungeApp {
     accounts: HashMap<String, Accounts>,
     /// Filter text for the selected session's account list.
     account_filter: String,
+    /// The Add SSO session form; kept while you look elsewhere.
+    add_session: AddSessionForm,
+    show_cli: bool,
     logo: egui::TextureHandle,
 }
 
@@ -126,6 +131,13 @@ enum Action {
     RefreshAccounts(String),
 }
 
+/// What the detail pane needs to draw the Add SSO session form.
+struct AddSessionPane<'a> {
+    form: &'a mut AddSessionForm,
+    show_cli: &'a mut bool,
+    cli: &'a AwsCli,
+}
+
 impl LungeApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let prefs: Prefs = cc
@@ -149,6 +161,8 @@ impl LungeApp {
             create: None,
             accounts: HashMap::new(),
             account_filter: String::new(),
+            add_session: AddSessionForm::default(),
+            show_cli: prefs.show_cli,
             logo: load_logo(ctx),
         };
         app.selection = app.fallback_selection();
@@ -228,6 +242,25 @@ impl LungeApp {
         self.notices.insert(session, notice);
         self.login = None;
         self.reload();
+    }
+
+    /// When the Add SSO session form's CLI run finishes: show the new
+    /// session and sign in to it, so its accounts can be listed.
+    fn poll_add_session(&mut self) {
+        let Some(name) = self.add_session.poll() else {
+            return;
+        };
+        self.reload();
+        self.account_filter.clear();
+        self.selection = Selection::Session(name.clone());
+        if self.login.is_none() {
+            self.start_login(name);
+        } else {
+            let notice = Notice::Info(
+                "Session added. Log in once the other login finishes to list your accounts.".into(),
+            );
+            self.notices.insert(name, notice);
+        }
     }
 
     /// Starts listing the selected session's accounts if it's Live and
@@ -387,6 +420,7 @@ impl eframe::App for LungeApp {
         let prefs = Prefs {
             zoom: self.zoom,
             theme: self.theme.choice(),
+            show_cli: self.show_cli,
         };
         eframe::set_value(storage, eframe::APP_KEY, &prefs);
     }
@@ -401,6 +435,7 @@ impl eframe::App for LungeApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.poll_login();
         self.poll_accounts();
+        self.poll_add_session();
         self.theme.update(ui.ctx());
         self.zoom = ui.ctx().zoom_factor();
         if self.loaded_at.elapsed() >= RELOAD_INTERVAL {
@@ -698,22 +733,37 @@ impl LungeApp {
             notices,
             accounts,
             account_filter,
+            add_session,
+            show_cli,
+            cli,
             ..
         } = self;
+        let pane = AddSessionPane {
+            form: add_session,
+            show_cli,
+            cli,
+        };
         let inventory = match inventory {
             Ok(inventory) => &*inventory,
             Err(message) => {
-                load_error(ui, message);
+                // No config yet is the normal first run: the form creates
+                // one, so don't greet a new user with an error.
+                let no_config = config::default_config_path().is_some_and(|p| !p.exists());
                 if *selection == Selection::AddSession {
-                    ui.add_space(16.0);
-                    add_session_panel(ui);
+                    if !no_config {
+                        load_error(ui, message);
+                        ui.add_space(16.0);
+                    }
+                    add_session_pane(ui, pane, None);
+                } else {
+                    load_error(ui, message);
                 }
                 return None;
             }
         };
         match &*selection {
             Selection::AddSession => {
-                add_session_panel(ui);
+                add_session_pane(ui, pane, Some(inventory));
                 None
             }
             Selection::Session(name) => {
@@ -763,29 +813,34 @@ fn load_error(ui: &mut Ui, message: &str) {
     ui.label(RichText::new(message).color(style::error_color(dark)));
 }
 
-fn add_session_panel(ui: &mut Ui) {
-    ui.heading("Add an SSO session");
-    ui.add_space(4.0);
-    ui.label(
-        "Lunge shows the SSO sessions in your AWS config; the AWS CLI creates them. \
-         Run this in a terminal and answer its prompts (a session name, your start URL, \
-         and its region). It signs you in and adds a profile for the account and role you pick.",
-    );
-    ui.add_space(8.0);
-    ui.horizontal(|ui| {
-        egui::Frame::new()
-            .inner_margin(egui::Margin::symmetric(10, 6))
-            .corner_radius(4.0)
-            .fill(ui.visuals().extreme_bg_color)
-            .show(ui, |ui| {
-                ui.label(RichText::new(SETUP_COMMAND).monospace().size(15.0));
-            });
-        if ui.button("Copy").clicked() {
-            ui.ctx().copy_text(SETUP_COMMAND.to_string());
+/// The Add SSO session form. `inventory` is `None` when the config couldn't
+/// be read: a missing config is fine (the CLI creates it), a broken one
+/// isn't.
+fn add_session_pane(ui: &mut Ui, pane: AddSessionPane<'_>, inventory: Option<&Inventory>) {
+    let target = match inventory {
+        Some(inventory) => add_session::Target {
+            config_path: Some(inventory.config_path.clone()),
+            config_broken: false,
+            taken: inventory
+                .sessions
+                .iter()
+                .map(|e| e.session.name.clone())
+                .chain(inventory.issues.iter().filter_map(|issue| match issue {
+                    ConfigIssue::SessionMissingKey { session, .. } => Some(session.clone()),
+                    _ => None,
+                }))
+                .collect(),
+        },
+        None => {
+            let config_path = config::default_config_path();
+            add_session::Target {
+                config_broken: config_path.as_ref().is_some_and(|p| p.exists()),
+                config_path,
+                taken: Vec::new(),
+            }
         }
-    });
-    ui.add_space(8.0);
-    ui.label("Then press Refresh. Run it again to add more accounts or roles to a session.");
+    };
+    pane.form.show(ui, pane.show_cli, pane.cli, &target);
 }
 
 fn access_key_detail(ui: &mut Ui, profile: &AccessKeyProfile) {

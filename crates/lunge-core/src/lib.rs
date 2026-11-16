@@ -24,6 +24,7 @@ pub mod login;
 pub mod naming;
 pub mod profiles;
 pub mod rename;
+pub mod sessions;
 
 use std::path::{Path, PathBuf};
 

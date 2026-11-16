@@ -21,8 +21,16 @@ Select an SSO session to see its state, how long until it expires, and the
 accounts and roles that use it. The window re-reads everything every 30
 seconds, and **Refresh** does it on demand.
 
-**Add SSO session** shows the `aws configure sso` command to run: the AWS CLI
-creates sessions, and Lunge picks them up.
+**Add SSO session** asks what `aws configure sso` asks before you sign in:
+a session name, your start URL, the SSO region, and the registration scopes
+(pre-filled with `sso:account:access`). **Save and sign in** passes those
+answers to `aws configure sso-session`, so the AWS CLI writes the
+`[sso-session]` block, not Lunge. Lunge then reads your config back to check
+the block holds exactly what you entered and runs `aws sso login`. Once
+you're signed in, your accounts appear and **Name** asks the rest of the
+CLI's questions (profile name, default region, and output format).
+Prefer the terminal? **Show CLI** opens a drawer with the `aws configure sso`
+command to copy, and shows exactly what Save will type into the CLI.
 
 **Every account you can use.** While a session is Live, Lunge asks AWS which
 accounts and roles it gives you and lists them all under **Accounts**.
@@ -89,8 +97,8 @@ file changed since the preview, or if your config file contains access keys
 (so it never copies secrets). Scripts or `AWS_PROFILE` settings using the old
 name need updating by hand.
 
-**Lunge's own file** is its display preferences (zoom, theme, and
-window size; nothing from your AWS files): `~/.local/share/lunge/app.ron` on
+**Lunge's own file** is its display preferences (zoom, theme, whether
+the CLI drawer is open, and window size; nothing from your AWS files): `~/.local/share/lunge/app.ron` on
 Linux, `~/Library/Application Support/lunge/app.ron` on macOS. Uninstalling
 the package doesn't remove per-user files, so delete that folder to remove
 every trace of Lunge.
@@ -105,9 +113,9 @@ it.
 **v1 is built around AWS SSO (IAM Identity Center).** Access-key profiles are
 listed, but Lunge can't sign in or open the console with them yet. SAML and
 role chaining aren't supported. Apart from renaming a profile, Lunge does not
-edit your AWS config or credentials; it doesn't create sessions (the AWS CLI
-does), route credentials to other tools, or replace the AWS CLI; it requires
-it.
+edit your AWS config or credentials itself: new sessions and profiles are
+written by the AWS CLI, which Lunge runs for you. It doesn't route
+credentials to other tools or replace the AWS CLI; it requires it.
 
 ## Limitations
 
@@ -117,6 +125,16 @@ it.
 - **Single accounts are listed only.** Access-key profiles (from
   `~/.aws/credentials`, or keys placed in `~/.aws/config`) appear under Single
   accounts; there's no sign-in or console action for them yet.
+- **Adding a session types into the CLI's prompts.** `aws configure
+  sso-session` has no flags, and `aws configure set` can't write
+  `[sso-session]` blocks, so Lunge answers the four prompts on the CLI's
+  input. If a future AWS CLI asks different questions, the CLI either stops
+  without writing anything or Lunge's check after saving catches the
+  mismatch and tells you which setting to fix. Either way, Lunge doesn't
+  carry on as if it had worked. The terminal route (**Show CLI**) always works.
+- **Adding a session doesn't edit or replace one.** Names already in your
+  config are refused; change an existing session with `aws configure
+  sso-session` in a terminal.
 - **One login at a time.** Each login opens a browser tab to approve, so
   other Log in buttons are disabled while one runs.
 - **Config parsing follows the AWS CLI exactly**, including its quirks: an
@@ -133,8 +151,8 @@ macOS and Linux. Windows is not supported.
 ## Requirements
 
 - [AWS CLI v2](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html)
-  on your `PATH`, with at least one `sso-session` configured
-  (`aws configure sso`).
+  on your `PATH`. Lunge can add your first `sso-session`, or use
+  `aws configure sso`.
 
 Lunge creates no AWS resources and makes no billable AWS API calls.
 

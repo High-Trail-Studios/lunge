@@ -24,7 +24,13 @@ pub struct NewProfile {
     /// Default region for commands using this profile; `None` to leave it
     /// unset.
     pub region: Option<String>,
+    /// Default output format (`json`, `yaml`, `yaml-stream`, `text`,
+    /// `table`); `None` to leave it unset (the CLI then uses json).
+    pub output: Option<String>,
 }
+
+/// The output formats the AWS CLI accepts for `output`.
+pub const OUTPUT_FORMATS: [&str; 5] = ["json", "yaml", "yaml-stream", "text", "table"];
 
 #[derive(Debug)]
 pub enum CreateError {
@@ -80,7 +86,7 @@ impl std::error::Error for CreateError {}
 
 impl AwsCli {
     /// Creates an SSO profile with `aws configure set`, writing to the
-    /// config file at `config_path`. Blocking (runs the CLI up to four
+    /// config file at `config_path`. Blocking (runs the CLI up to five
     /// times): call it off the UI thread.
     pub fn create_sso_profile(
         &self,
@@ -103,6 +109,9 @@ impl AwsCli {
         ];
         if let Some(region) = new.region.as_deref().filter(|r| !r.is_empty()) {
             settings.push(("region", region));
+        }
+        if let Some(output) = new.output.as_deref().filter(|o| !o.is_empty()) {
+            settings.push(("output", output));
         }
         settings.push(("sso_session", new.session.as_str()));
 
@@ -153,6 +162,7 @@ mod tests {
             account_id: "111122223333".into(),
             role_name: "AdministratorAccess".into(),
             region: Some("eu-west-1".into()),
+            output: Some("json".into()),
         }
     }
 
@@ -195,6 +205,7 @@ exit 0
                 "configure set sso_account_id 111122223333 --profile work-prod-admin --no-cli-auto-prompt config={config}\n\
                  configure set sso_role_name AdministratorAccess --profile work-prod-admin --no-cli-auto-prompt config={config}\n\
                  configure set region eu-west-1 --profile work-prod-admin --no-cli-auto-prompt config={config}\n\
+                 configure set output json --profile work-prod-admin --no-cli-auto-prompt config={config}\n\
                  configure set sso_session work --profile work-prod-admin --no-cli-auto-prompt config={config}\n"
             )
         );

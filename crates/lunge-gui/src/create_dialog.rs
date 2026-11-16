@@ -1,5 +1,7 @@
 //! The "Name this account" dialog: creates a profile for an account role,
-//! pre-filled with a suggested name. The AWS CLI does the writing
+//! pre-filled with a suggested name. It asks what `aws configure sso` asks
+//! after you pick an account and role: profile name, default region, and
+//! default output format. The AWS CLI does the writing
 //! (`aws configure set`, via `lunge_core::profiles`); the dialog shows the
 //! exact commands first.
 
@@ -9,7 +11,7 @@ use std::sync::mpsc::{self, Receiver};
 use eframe::egui::{self, RichText};
 use lunge_core::config::{self, SsoSession};
 use lunge_core::login::AwsCli;
-use lunge_core::profiles::NewProfile;
+use lunge_core::profiles::{NewProfile, OUTPUT_FORMATS};
 use lunge_core::{naming, rename};
 
 use crate::style;
@@ -24,6 +26,8 @@ pub struct CreateProfileDialog {
     role_name: String,
     name: String,
     region: String,
+    /// Empty to leave `output` unset (the CLI then uses json).
+    output: String,
     /// Profile names already in use when the dialog opened.
     taken: Vec<String>,
     creating: Option<Receiver<Result<(), String>>>,
@@ -62,6 +66,7 @@ impl CreateProfileDialog {
             role_name,
             name,
             region: session.region.clone(),
+            output: String::new(),
             taken,
             creating: None,
             error: None,
@@ -95,6 +100,9 @@ impl CreateProfileDialog {
         if !self.region.is_empty() {
             settings.push(("region", self.region.as_str()));
         }
+        if !self.output.is_empty() {
+            settings.push(("output", self.output.as_str()));
+        }
         settings.push(("sso_session", self.session.as_str()));
         settings
             .into_iter()
@@ -113,6 +121,7 @@ impl CreateProfileDialog {
             account_id: self.account_id.clone(),
             role_name: self.role_name.clone(),
             region: Some(self.region.clone()).filter(|r| !r.is_empty()),
+            output: Some(self.output.clone()).filter(|o| !o.is_empty()),
         };
         let ctx = ctx.clone();
         // PREFER THE CLI: `aws configure set` writes the profile.
@@ -173,6 +182,24 @@ impl CreateProfileDialog {
                 !busy,
                 egui::TextEdit::singleline(&mut self.region).desired_width(160.0),
             );
+            ui.add_space(4.0);
+            ui.label("Default output format (optional)");
+            ui.add_enabled_ui(!busy, |ui| {
+                let shown = if self.output.is_empty() {
+                    "Not set (json)"
+                } else {
+                    self.output.as_str()
+                };
+                egui::ComboBox::from_id_salt("create-profile-output")
+                    .selected_text(shown)
+                    .width(160.0)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut self.output, String::new(), "Not set (json)");
+                        for format in OUTPUT_FORMATS {
+                            ui.selectable_value(&mut self.output, format.to_string(), format);
+                        }
+                    });
+            });
 
             ui.add_space(8.0);
             let problem = self.problem();

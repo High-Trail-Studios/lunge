@@ -261,39 +261,13 @@ pub fn all_profile_names(
     credentials_path: Option<&Path>,
 ) -> Result<Vec<String>, ConfigError> {
     let mut names = Vec::new();
-    match read_scrubbed(config_path, |b| std::str::from_utf8(b).ok().map(parse_ini)) {
-        Ok(Some(Ok(sections))) => {
-            for s in sections {
-                if s.name == "default" {
-                    names.push("default".to_string());
-                } else if s.name.starts_with("profile")
-                    && let Some(name) = section_name_arg(&s.name)
-                {
-                    names.push(name);
-                }
-            }
-        }
-        Ok(Some(Err(source))) => {
-            return Err(ConfigError::Parse {
-                path: config_path.to_path_buf(),
-                source,
-            });
-        }
-        Ok(None) => {
-            return Err(ConfigError::Parse {
-                path: config_path.to_path_buf(),
-                source: ParseError {
-                    line: 0,
-                    message: "file is not valid UTF-8".into(),
-                },
-            });
-        }
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-        Err(source) => {
-            return Err(ConfigError::Io {
-                path: config_path.to_path_buf(),
-                source,
-            });
+    for s in read_sections(config_path)? {
+        if s.name == "default" {
+            names.push("default".to_string());
+        } else if s.name.starts_with("profile")
+            && let Some(name) = section_name_arg(&s.name)
+        {
+            names.push(name);
         }
     }
     if let Some(path) = credentials_path {
@@ -307,6 +281,57 @@ pub fn all_profile_names(
     names.sort();
     names.dedup();
     Ok(names)
+}
+
+/// The name of every `[sso-session …]` block in the config file, complete
+/// or not. A missing file has none. Used to refuse a new session name that
+/// would collide.
+pub fn sso_session_names(config_path: &Path) -> Result<Vec<String>, ConfigError> {
+    let mut names: Vec<String> = read_sections(config_path)?
+        .into_iter()
+        .filter(|s| s.name.starts_with("sso-session"))
+        .filter_map(|s| section_name_arg(&s.name))
+        .collect();
+    names.sort();
+    names.dedup();
+    Ok(names)
+}
+
+/// The settings of `[sso-session NAME]` as written (the last block wins, as
+/// in the CLI), or `None` if there's no such block. Session blocks hold no
+/// secrets.
+pub fn sso_session_settings(
+    config_path: &Path,
+    name: &str,
+) -> Result<Option<Vec<(String, String)>>, ConfigError> {
+    Ok(read_sections(config_path)?
+        .into_iter()
+        .rev()
+        .find(|s| {
+            s.name.starts_with("sso-session") && section_name_arg(&s.name).as_deref() == Some(name)
+        })
+        .map(|s| s.entries))
+}
+
+/// Parses the config file's sections; a missing file has none.
+fn read_sections(config_path: &Path) -> Result<Vec<IniSection>, ConfigError> {
+    let parse_error = |source| ConfigError::Parse {
+        path: config_path.to_path_buf(),
+        source,
+    };
+    match read_scrubbed(config_path, |b| std::str::from_utf8(b).ok().map(parse_ini)) {
+        Ok(Some(Ok(sections))) => Ok(sections),
+        Ok(Some(Err(source))) => Err(parse_error(source)),
+        Ok(None) => Err(parse_error(ParseError {
+            line: 0,
+            message: "file is not valid UTF-8".into(),
+        })),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(source) => Err(ConfigError::Io {
+            path: config_path.to_path_buf(),
+            source,
+        }),
+    }
 }
 
 /// Names of credentials-file profiles that hold an access key.
