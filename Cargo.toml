@@ -3,7 +3,7 @@ members = ["crates/lunge-core", "crates/lunge-gui"]
 resolver = "3"
 
 [workspace.package]
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.99"
 license = "Apache-2.0"
@@ -11,7 +11,7 @@ authors = ["High Trail Studios"]
 repository = "https://github.com/High-Trail-Studios/lunge"
 
 [workspace.dependencies]
-lunge-core = { path = "crates/lunge-core", version = "0.3.0" }
+lunge-core = { path = "crates/lunge-core", version = "0.4.0" }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sha1_smol = "1.0.1"
