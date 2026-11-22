@@ -35,6 +35,10 @@ Two in-memory exceptions, both owner-approved:
   `read_access_token`. The fetched account list stays in memory too.
 - Creating a profile for a listed account goes through the CLI
   (`aws configure set`, `lunge_core::profiles`), not a direct file write.
+  So does changing a profile's default region from the account table
+  (`AwsCli::set_profile_region`, owner decision 2026-11-21). It checks the
+  profile exists first, because `aws configure set --profile X` silently
+  creates X if it doesn't.
 - Adding an SSO session goes through the CLI too (`lunge_core::sessions`,
   owner decision): `aws configure set` can't write `[sso-session]` blocks
   (it writes a bogus `sso-session =` line under `[default]` and exits 0),
@@ -105,9 +109,9 @@ change that would weaken it needs an explicit decision from the owner.
 
 AWS SSO sessions, plus a read-only list of access-key profiles (sign-in for
 those is deferred). No SAML or role-chaining session types. No config
-editing beyond the profile rename and CLI-driven creation of sessions and
-profiles (no editing or deleting sessions), credential routing, or
-general-purpose engine.
+editing beyond the profile rename, CLI-driven creation of sessions and
+profiles, and setting a profile's region through the CLI (no editing or
+deleting sessions), credential routing, or general-purpose engine.
 
 ## Not a fork
 

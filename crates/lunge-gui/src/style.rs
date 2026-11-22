@@ -13,6 +13,17 @@ pub const BRAND_NAVY: Color32 = Color32::from_rgb(20, 27, 53);
 pub const PROVIDER_ACCENT: Color32 = Color32::from_rgb(232, 135, 48);
 pub const PROVIDER_ACCENT_HOVER: Color32 = Color32::from_rgb(242, 155, 75);
 
+/// Background of every other row in a table. egui's default stripe is too
+/// faint to follow a wide row across; this is a step further from the panel
+/// background in each theme, with a slight cool tint.
+pub fn table_stripe(dark: bool) -> Color32 {
+    if dark {
+        Color32::from_rgb(40, 43, 50)
+    } else {
+        Color32::from_rgb(234, 238, 244)
+    }
+}
+
 /// Status color, tuned per theme for contrast. Always shown next to a text
 /// label: color is never the only signal.
 pub fn status_color(state: &SessionState, dark: bool) -> Color32 {

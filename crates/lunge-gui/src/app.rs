@@ -6,10 +6,12 @@ use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Align, Color32, Layout, RichText, Sense, Ui};
-use lunge_core::accounts::{self, AccountRole, AccountRow};
+use lunge_core::accounts::{self, AccountRole, AccountRow, SortColumn};
 use lunge_core::cache::SessionState;
 use lunge_core::config::{self, AccessKeyProfile, ConfigIssue, KeySource};
 use lunge_core::login::{AwsCli, LoginError, LoginProcess};
+use lunge_core::profiles::{self, Shell};
+use lunge_core::regions;
 use lunge_core::time::OffsetDateTime;
 use lunge_core::{Inventory, SessionEntry};
 
@@ -84,10 +86,21 @@ pub struct LungeApp {
     accounts: HashMap<String, Accounts>,
     /// Filter text for the selected session's account list.
     account_filter: String,
+    /// The account list's sort column, and whether it's descending.
+    account_sort: (SortColumn, bool),
+    /// A profile region change the CLI is writing; one at a time.
+    region_update: Option<RegionUpdate>,
     /// The Add SSO session form; kept while you look elsewhere.
     add_session: AddSessionForm,
     show_cli: bool,
     logo: egui::TextureHandle,
+}
+
+struct RegionUpdate {
+    session: String,
+    profile: String,
+    region: String,
+    result: Receiver<Result<(), String>>,
 }
 
 enum Accounts {
@@ -129,6 +142,17 @@ enum Action {
         role_name: String,
     },
     RefreshAccounts(String),
+    /// Set a profile's default region (through the CLI).
+    SetRegion {
+        session: String,
+        profile: String,
+        region: String,
+    },
+    /// Text was copied to the clipboard; say so under the session.
+    Copied {
+        session: String,
+        text: String,
+    },
 }
 
 /// What the detail pane needs to draw the Add SSO session form.
@@ -161,6 +185,9 @@ impl LungeApp {
             create: None,
             accounts: HashMap::new(),
             account_filter: String::new(),
+            // Profile first: blanks sort last, so unnamed accounts fall to the bottom.
+            account_sort: (SortColumn::Profile, false),
+            region_update: None,
             add_session: AddSessionForm::default(),
             show_cli: prefs.show_cli,
             logo: load_logo(ctx),
@@ -356,7 +383,62 @@ impl LungeApp {
             Action::RefreshAccounts(session) => {
                 self.accounts.remove(&session);
             }
+            Action::SetRegion {
+                session,
+                profile,
+                region,
+            } => self.start_region_update(session, profile, region),
+            Action::Copied { session, text } => {
+                let notice = Notice::Info(format!("Copied {} to the clipboard.", text.trim_end()));
+                self.notices.insert(session, notice);
+            }
         }
+    }
+
+    fn start_region_update(&mut self, session: String, profile: String, region: String) {
+        let Ok(inventory) = &self.inventory else {
+            return;
+        };
+        if self.region_update.is_some() {
+            return;
+        }
+        let (tx, rx) = mpsc::channel();
+        let cli = self.cli.clone();
+        let config_path = inventory.config_path.clone();
+        let (name, code) = (profile.clone(), region.clone());
+        // PREFER THE CLI: `aws configure set region` writes the change.
+        std::thread::spawn(move || {
+            let result = cli
+                .set_profile_region(&config_path, &name, &code)
+                .map_err(|e| e.to_string());
+            let _ = tx.send(result);
+        });
+        self.notices.remove(&session);
+        self.region_update = Some(RegionUpdate {
+            session,
+            profile,
+            region,
+            result: rx,
+        });
+    }
+
+    fn poll_region_update(&mut self) {
+        let Some(update) = &self.region_update else {
+            return;
+        };
+        let Ok(result) = update.result.try_recv() else {
+            return;
+        };
+        let notice = match result {
+            Ok(()) => Notice::Success(format!(
+                "Set {}'s default region to {}.",
+                update.profile, update.region
+            )),
+            Err(e) => Notice::Failure(e),
+        };
+        self.notices.insert(update.session.clone(), notice);
+        self.region_update = None;
+        self.reload();
     }
 
     fn show_create_dialog(&mut self, ctx: &egui::Context) {
@@ -436,6 +518,7 @@ impl eframe::App for LungeApp {
         self.poll_login();
         self.poll_accounts();
         self.poll_add_session();
+        self.poll_region_update();
         self.theme.update(ui.ctx());
         self.zoom = ui.ctx().zoom_factor();
         if self.loaded_at.elapsed() >= RELOAD_INTERVAL {
@@ -503,7 +586,7 @@ impl eframe::App for LungeApp {
         self.show_create_dialog(ui.ctx());
 
         let ctx = ui.ctx();
-        if self.login.is_some() {
+        if self.login.is_some() || self.region_update.is_some() {
             ctx.request_repaint_after(LOGIN_POLL_INTERVAL);
         } else {
             ctx.request_repaint_after(IDLE_REPAINT_INTERVAL);
@@ -733,6 +816,8 @@ impl LungeApp {
             notices,
             accounts,
             account_filter,
+            account_sort,
+            region_update,
             add_session,
             show_cli,
             cli,
@@ -780,6 +865,8 @@ impl LungeApp {
                     notice: notices.get(&entry.session.name),
                     accounts: accounts.get(&entry.session.name),
                     filter: account_filter,
+                    sort: account_sort,
+                    region_update: region_update.as_ref().map(|u| u.profile.as_str()),
                 }
                 .show(ui)
             }
@@ -884,6 +971,9 @@ struct SessionDetail<'a> {
     notice: Option<&'a Notice>,
     accounts: Option<&'a Accounts>,
     filter: &'a mut String,
+    sort: &'a mut (SortColumn, bool),
+    /// The profile whose region is being written, if any (in any session).
+    region_update: Option<&'a str>,
 }
 
 /// Show the account filter once a list is longer than this.
@@ -962,19 +1052,20 @@ impl SessionDetail<'_> {
         });
         ui.add_space(2.0);
 
-        let rows = accounts::account_rows(&session.profiles, listed);
+        let mut rows = accounts::account_rows(&session.profiles, listed);
         if rows.is_empty() {
             ui.label(
                 RichText::new("No profiles use this session yet. Log in to list your accounts, or run `aws configure sso`.")
                     .weak()
                     .italics(),
             );
+            return action;
         }
         let filterable = rows.len() > FILTER_THRESHOLD;
         if filterable {
             ui.add(
                 egui::TextEdit::singleline(self.filter)
-                    .hint_text("Filter by profile, account, ID, or role")
+                    .hint_text("Filter by account, ID, role, profile, or region")
                     .desired_width(f32::INFINITY),
             );
             ui.add_space(4.0);
@@ -985,37 +1076,51 @@ impl SessionDetail<'_> {
         } else {
             String::new()
         };
-        let mut shown = 0;
-        for row in rows
+        accounts::sort_rows(&mut rows, self.sort.0, self.sort.1);
+        let visible: Vec<&AccountRow> = rows
             .iter()
             .filter(|r| filter.is_empty() || row_matches(r, &filter))
-        {
-            shown += 1;
-            match account_row(ui, row, listed.is_some()) {
-                Some(RowClick::Rename(profile)) => {
-                    action = Some(Action::Rename {
-                        session: session.name.clone(),
-                        profile,
-                    });
-                }
-                Some(RowClick::Name) => {
-                    action = Some(Action::NameAccount {
-                        session: session.name.clone(),
-                        account_id: row.account_id.clone().unwrap_or_default(),
-                        account_name: row.account_name.clone().unwrap_or_default(),
-                        role_name: row.role_name.clone().unwrap_or_default(),
-                    });
-                }
-                None => {}
-            }
-            ui.add_space(4.0);
-        }
-        if shown == 0 && !rows.is_empty() {
+            .collect();
+        if visible.is_empty() {
             ui.label(
                 RichText::new("No accounts match the filter.")
                     .weak()
                     .italics(),
             );
+            return action;
+        }
+
+        let table = AccountTable {
+            rows: &visible,
+            have_listing: listed.is_some(),
+            region_update: self.region_update,
+            shell: Shell::current(),
+        };
+        let click = table.show(ui, &session.name, self.sort);
+        let session = session.name.clone();
+        match click {
+            Some((_, RowClick::Rename(profile))) => {
+                action = Some(Action::Rename { session, profile });
+            }
+            Some((row, RowClick::Name)) => {
+                action = Some(Action::NameAccount {
+                    session,
+                    account_id: row.account_id.clone().unwrap_or_default(),
+                    account_name: row.account_name.clone().unwrap_or_default(),
+                    role_name: row.role_name.clone().unwrap_or_default(),
+                });
+            }
+            Some((_, RowClick::SetRegion { profile, region })) => {
+                action = Some(Action::SetRegion {
+                    session,
+                    profile,
+                    region,
+                });
+            }
+            Some((_, RowClick::Copied(text))) => {
+                action = Some(Action::Copied { session, text });
+            }
+            None => {}
         }
         action
     }
@@ -1134,6 +1239,7 @@ fn row_matches(row: &AccountRow, filter: &str) -> bool {
         row.account_name.as_deref(),
         row.account_id.as_deref(),
         row.role_name.as_deref(),
+        row.profile.as_ref().and_then(|p| p.region.as_deref()),
     ]
     .into_iter()
     .flatten()
@@ -1143,76 +1249,218 @@ fn row_matches(row: &AccountRow, filter: &str) -> bool {
 enum RowClick {
     Rename(String),
     Name,
+    SetRegion { profile: String, region: String },
+    Copied(String),
 }
 
-/// One account role: its profile name (with Rename), or a muted "no profile
-/// name yet" with a pencil to create one.
-fn account_row(ui: &mut Ui, row: &AccountRow, have_listing: bool) -> Option<RowClick> {
-    let mut click = None;
-    egui::Frame::group(ui.style())
-        .inner_margin(8.0)
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
-                match &row.profile {
-                    Some(profile) => {
-                        ui.label(RichText::new(&profile.name).strong());
-                    }
-                    None => {
-                        ui.label(RichText::new("No profile name yet").italics().weak());
-                    }
-                }
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    match &row.profile {
-                        Some(profile) => {
-                            if ui
-                                .small_button("Rename")
-                                .on_hover_text(format!(
-                                    "Give this profile your own name in {}",
-                                    aws_file("config")
-                                ))
-                                .clicked()
-                            {
-                                click = Some(RowClick::Rename(profile.name.clone()));
+/// The account list as a sortable table: one row per account role, with
+/// its profile (if any), region, and the shell text to use the profile.
+struct AccountTable<'a> {
+    rows: &'a [&'a AccountRow],
+    have_listing: bool,
+    /// The profile whose region is being written, if any.
+    region_update: Option<&'a str>,
+    shell: Shell,
+}
+
+impl<'a> AccountTable<'a> {
+    fn show(
+        &self,
+        ui: &mut Ui,
+        session: &str,
+        sort: &mut (SortColumn, bool),
+    ) -> Option<(&'a AccountRow, RowClick)> {
+        let mut click = None;
+        // Scrolls sideways when the window is too narrow for every column.
+        egui::ScrollArea::horizontal()
+            .id_salt(("account-table", session))
+            .show(ui, |ui| {
+                ui.visuals_mut().faint_bg_color = style::table_stripe(ui.visuals().dark_mode);
+                egui::Grid::new(("accounts", session))
+                    .num_columns(7)
+                    .striped(true)
+                    .spacing([16.0, 6.0])
+                    .min_row_height(30.0)
+                    .show(ui, |ui| {
+                        sort_header(ui, "Account ID", SortColumn::AccountId, sort);
+                        sort_header(ui, "Account name", SortColumn::AccountName, sort);
+                        sort_header(ui, "Role", SortColumn::Role, sort);
+                        sort_header(ui, "Profile", SortColumn::Profile, sort);
+                        sort_header(ui, "Region", SortColumn::Region, sort);
+                        ui.label("");
+                        header_label(ui, "CLI");
+                        ui.end_row();
+
+                        for &row in self.rows {
+                            if let Some(c) = self.row(ui, row) {
+                                click = Some((row, c));
                             }
+                            ui.end_row();
                         }
-                        None => {
-                            if pencil_button(ui, "Name")
-                                .on_hover_text("Create a profile for this account and role")
-                                .clicked()
-                            {
-                                click = Some(RowClick::Name);
-                            }
+                    });
+            });
+        click
+    }
+
+    fn row(&self, ui: &mut Ui, row: &AccountRow) -> Option<RowClick> {
+        let mut click = None;
+        let token_only = row.account_id.is_none() && row.role_name.is_none();
+
+        ui.horizontal(|ui| {
+            ui.label(row.account_id.as_deref().unwrap_or(""));
+            if self.have_listing && !row.listed && row.account_id.is_some() {
+                ui.label(RichText::new("not listed").small().weak())
+                    .on_hover_text(
+                        "Not in your current AWS access list; access may have been removed.",
+                    );
+            }
+        });
+        // Blank when the portal hasn't been asked (or has no name for it).
+        ui.label(row.account_name.as_deref().unwrap_or(""));
+        if token_only {
+            ui.label(RichText::new("token only").small().weak())
+                .on_hover_text("This profile has no account or role; it only holds the SSO token.");
+        } else {
+            ui.label(row.role_name.as_deref().unwrap_or(""));
+        }
+
+        let Some(profile) = &row.profile else {
+            ui.label(RichText::new("none yet").italics().weak());
+            ui.add_enabled(false, egui::Button::new("—").small())
+                .on_disabled_hover_text("Name this account first to set its region");
+            if pencil_button(ui, "Name")
+                .on_hover_text("Create a profile for this account and role")
+                .clicked()
+            {
+                click = Some(RowClick::Name);
+            }
+            ui.label("");
+            return click;
+        };
+
+        ui.label(RichText::new(&profile.name).strong());
+        if let Some(region) = self.region_picker(ui, &profile.name, profile.region.as_deref()) {
+            click = Some(RowClick::SetRegion {
+                profile: profile.name.clone(),
+                region,
+            });
+        }
+        if ui
+            .small_button("Rename")
+            .on_hover_text(format!(
+                "Give this profile your own name in {}",
+                aws_file("config")
+            ))
+            .clicked()
+        {
+            click = Some(RowClick::Rename(profile.name.clone()));
+        }
+        let text = profiles::profile_env_prefix(&profile.name, self.shell);
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(text.trim_end()).monospace().small());
+            let hint = match self.shell {
+                Shell::Posix => "Copy; paste it before an aws command to run that command as this profile",
+                Shell::PowerShell => {
+                    "Copy for PowerShell; it uses this profile for the rest of that PowerShell window"
+                }
+            };
+            if ui.small_button("Copy").on_hover_text(hint).clicked() {
+                ui.ctx().copy_text(text.clone());
+                click = Some(RowClick::Copied(text.clone()));
+            }
+        });
+        click
+    }
+
+    /// The profile's default region, as a dropdown of every known region.
+    /// Returns a newly picked region.
+    fn region_picker(&self, ui: &mut Ui, profile: &str, current: Option<&str>) -> Option<String> {
+        if self.region_update == Some(profile) {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(RichText::new("Saving…").small().weak());
+            });
+            return None;
+        }
+        let mut picked = None;
+        let busy = self.region_update.is_some();
+        ui.add_enabled_ui(!busy, |ui| {
+            let combo = egui::ComboBox::from_id_salt(("region", profile))
+                .selected_text(current.unwrap_or("—"))
+                .width(110.0)
+                .height(320.0)
+                .show_ui(ui, |ui| {
+                    for region in regions::REGIONS {
+                        let label = format!("{}   {}", region.code, region.name);
+                        if ui
+                            .selectable_label(current == Some(region.code), label)
+                            .clicked()
+                            && current != Some(region.code)
+                        {
+                            picked = Some(region.code.to_string());
                         }
                     }
                 });
-            });
-            let mut details = Vec::new();
-            if let Some(name) = row.account_name.as_deref().filter(|n| !n.is_empty()) {
-                details.push(name.to_string());
-            }
-            if let Some(account) = &row.account_id {
-                details.push(account.clone());
-            }
-            if let Some(role) = &row.role_name {
-                details.push(role.clone());
-            }
-            if let Some(region) = row.profile.as_ref().and_then(|p| p.region.clone()) {
-                details.push(region);
-            }
-            if details.is_empty() {
-                details.push("token-only profile (no account or role)".into());
-            }
-            ui.label(RichText::new(details.join("  ·  ")).weak());
-            if have_listing && !row.listed && row.account_id.is_some() {
-                ui.label(
-                    RichText::new(
-                        "Not in your current AWS access list; access may have been removed.",
-                    )
-                    .small()
-                    .weak(),
-                );
-            }
+            let hover = match current {
+                Some(code) => regions::name(code).unwrap_or(code).to_string(),
+                None => "No default region; pick one to set it".into(),
+            };
+            combo
+                .response
+                .on_hover_text(format!("{hover}. Saved with `aws configure set region`."))
+                .on_disabled_hover_text("Another region change is being saved");
         });
-    click
+        picked
+    }
+}
+
+fn header_label(ui: &mut Ui, text: &str) {
+    ui.label(RichText::new(text).small().weak().strong());
+}
+
+/// A clickable column header. Clicking the sorted column flips direction;
+/// another column sorts ascending. The sorted column shows a drawn triangle
+/// (egui's built-in fonts have no reliable arrow glyphs).
+fn sort_header(ui: &mut Ui, text: &str, column: SortColumn, sort: &mut (SortColumn, bool)) {
+    let active = sort.0 == column;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        let label = RichText::new(text).small().strong();
+        let label = if active { label } else { label.weak() };
+        let response = ui
+            .add(egui::Label::new(label).sense(Sense::click()))
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .on_hover_text(format!("Sort by {}", text.to_lowercase()));
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), Sense::hover());
+        if active {
+            let color = ui.visuals().strong_text_color();
+            let c = rect.center();
+            let s = 3.5;
+            let points = if sort.1 {
+                vec![
+                    c + egui::vec2(-s, -s * 0.6),
+                    c + egui::vec2(s, -s * 0.6),
+                    c + egui::vec2(0.0, s * 0.7),
+                ]
+            } else {
+                vec![
+                    c + egui::vec2(-s, s * 0.6),
+                    c + egui::vec2(s, s * 0.6),
+                    c + egui::vec2(0.0, -s * 0.7),
+                ]
+            };
+            ui.painter().add(egui::Shape::convex_polygon(
+                points,
+                color,
+                egui::Stroke::NONE,
+            ));
+        }
+        if response.clicked() {
+            *sort = if active {
+                (column, !sort.1)
+            } else {
+                (column, false)
+            };
+        }
+    });
 }

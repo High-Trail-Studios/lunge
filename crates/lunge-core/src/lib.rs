@@ -23,6 +23,7 @@ pub mod config;
 pub mod login;
 pub mod naming;
 pub mod profiles;
+pub mod regions;
 pub mod rename;
 pub mod sessions;
 
