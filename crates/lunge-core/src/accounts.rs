@@ -13,6 +13,7 @@
 //! the request header. It is never logged, written, cached, or put on a
 //! command line, and error messages never include it.
 
+use std::cmp::Ordering;
 use std::fmt;
 use std::path::Path;
 use std::time::Duration;
@@ -327,6 +328,57 @@ pub fn account_rows(profiles: &[SsoProfile], listed: Option<&[AccountRole]>) -> 
     rows
 }
 
+/// A sortable column of the account list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortColumn {
+    AccountId,
+    AccountName,
+    Role,
+    Profile,
+    Region,
+}
+
+impl AccountRow {
+    fn sort_key(&self, column: SortColumn) -> Option<&str> {
+        match column {
+            SortColumn::AccountId => self.account_id.as_deref(),
+            SortColumn::AccountName => self.account_name.as_deref(),
+            SortColumn::Role => self.role_name.as_deref(),
+            SortColumn::Profile => self.profile.as_ref().map(|p| p.name.as_str()),
+            SortColumn::Region => self.profile.as_ref().and_then(|p| p.region.as_deref()),
+        }
+        .filter(|v| !v.is_empty())
+    }
+}
+
+/// Sorts by `column`, ignoring case. Blank cells go last in either
+/// direction; ties fall back to account name, ID, role, then profile, so the
+/// order is stable as the list refreshes.
+pub fn sort_rows(rows: &mut [AccountRow], column: SortColumn, descending: bool) {
+    const TIEBREAK: [SortColumn; 4] = [
+        SortColumn::AccountName,
+        SortColumn::AccountId,
+        SortColumn::Role,
+        SortColumn::Profile,
+    ];
+    let key = |row: &AccountRow, c| row.sort_key(c).map(str::to_lowercase);
+    rows.sort_by(|a, b| {
+        let primary = match (key(a, column), key(b, column)) {
+            (Some(x), Some(y)) if descending => y.cmp(&x),
+            (Some(x), Some(y)) => x.cmp(&y),
+            (Some(_), None) => Ordering::Less,
+            (None, Some(_)) => Ordering::Greater,
+            (None, None) => Ordering::Equal,
+        };
+        TIEBREAK.iter().fold(primary, |order, &c| {
+            order.then_with(|| match (key(a, c), key(b, c)) {
+                (Some(x), Some(y)) => x.cmp(&y),
+                (x, y) => x.is_none().cmp(&y.is_none()),
+            })
+        })
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -546,5 +598,55 @@ mod tests {
             ]
         );
         assert_eq!(rows[2].account_name.as_deref(), Some("Prod"));
+    }
+
+    fn names(rows: &[AccountRow]) -> Vec<String> {
+        rows.iter()
+            .map(|r| {
+                r.profile
+                    .as_ref()
+                    .map(|p| p.name.clone())
+                    .unwrap_or_else(|| {
+                        format!(
+                            "{}/{}",
+                            r.account_id.as_deref().unwrap_or("-"),
+                            r.role_name.as_deref().unwrap_or("-")
+                        )
+                    })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn sorting_ignores_case_and_keeps_blanks_last() {
+        let mut regional = profile("Beta", Some("2"), Some("Admin"));
+        regional.region = Some("us-west-2".into());
+        let mut other = profile("alpha", Some("1"), Some("ReadOnly"));
+        other.region = Some("eu-west-1".into());
+        let profiles = [regional, other, profile("token-only", None, None)];
+        let listed = [
+            role("1", "prod", "ReadOnly"),
+            role("2", "Dev", "Admin"),
+            role("3", "", "Admin"),
+        ];
+        let mut rows = account_rows(&profiles, Some(&listed));
+
+        sort_rows(&mut rows, SortColumn::Profile, false);
+        assert_eq!(names(&rows), ["alpha", "Beta", "token-only", "3/Admin"]);
+        sort_rows(&mut rows, SortColumn::Profile, true);
+        assert_eq!(names(&rows), ["token-only", "Beta", "alpha", "3/Admin"]);
+
+        // Account name: blank names last both ways; ties broken by ID.
+        sort_rows(&mut rows, SortColumn::AccountName, false);
+        assert_eq!(names(&rows), ["Beta", "alpha", "3/Admin", "token-only"]);
+        sort_rows(&mut rows, SortColumn::AccountName, true);
+        assert_eq!(names(&rows), ["alpha", "Beta", "3/Admin", "token-only"]);
+
+        sort_rows(&mut rows, SortColumn::Region, false);
+        assert_eq!(names(&rows), ["alpha", "Beta", "3/Admin", "token-only"]);
+        sort_rows(&mut rows, SortColumn::AccountId, true);
+        assert_eq!(names(&rows), ["3/Admin", "Beta", "alpha", "token-only"]);
+        sort_rows(&mut rows, SortColumn::Role, false);
+        assert_eq!(names(&rows), ["Beta", "3/Admin", "alpha", "token-only"]);
     }
 }

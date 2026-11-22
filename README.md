@@ -33,12 +33,26 @@ Prefer the terminal? **Show CLI** opens a drawer with the `aws configure sso`
 command to copy, and shows exactly what Save will type into the CLI.
 
 **Every account you can use.** While a session is Live, Lunge asks AWS which
-accounts and roles it gives you and lists them all under **Accounts**.
-Account roles that already have a profile show its name; the rest show "No
-profile name yet" with a **Name** button, which suggests a name
-(`<session>-<account>-<role>`, e.g. `acme-dev-admin`) and creates the profile
-with `aws configure set` once you confirm. A filter appears for long lists.
-Profiles whose account role AWS no longer lists are flagged.
+accounts and roles it gives you and lists them all in a table under
+**Accounts**: account ID, account name, role, profile, region, and the shell
+text to use the profile. Click a column header to sort by it (again to
+reverse). It starts sorted by profile, which puts accounts without one at
+the bottom. The account name is blank until the session is logged in and
+listed, or if AWS has none for it.
+
+- Account roles without a profile show "none yet" and a **Name** button,
+  which suggests a name (`<session>-<account>-<role>`, e.g.
+  `acme-dev-admin`) and creates the profile with `aws configure set` once
+  you confirm.
+- **Region** sets the profile's default region straight away with
+  `aws configure set region <region> --profile <name>`.
+- **Copy** puts `AWS_PROFILE=<name> ` on the clipboard, to paste before an
+  `aws` command. On Windows it copies `$env:AWS_PROFILE='<name>'; ` for
+  PowerShell instead, which applies to the rest of that PowerShell window
+  rather than one command.
+
+A filter appears for long lists. Profiles whose account role AWS no longer
+lists are marked "not listed".
 
 The status bar shows when Lunge last re-read your files and has zoom presets
 (100% to 200%; Ctrl + / Ctrl - / Ctrl 0 work too), which help on high-DPI
@@ -135,6 +149,11 @@ credentials to other tools or replace the AWS CLI; it requires it.
 - **Adding a session doesn't edit or replace one.** Names already in your
   config are refused; change an existing session with `aws configure
   sso-session` in a terminal.
+- **The region list is built in.** Asking AWS for its regions would need
+  role credentials just to fill a dropdown, so Lunge ships a fixed list and
+  needs an update to offer regions AWS adds later. A region already set on a
+  profile still shows, listed or not. Regions can't be cleared from Lunge
+  (the CLI can't unset a setting); remove the `region` line by hand.
 - **One login at a time.** Each login opens a browser tab to approve, so
   other Log in buttons are disabled while one runs.
 - **Config parsing follows the AWS CLI exactly**, including its quirks: an
