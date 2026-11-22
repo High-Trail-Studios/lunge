@@ -111,8 +111,10 @@ jobs:
           {
             echo "## Install"
             echo
-            echo "- **Debian/Ubuntu:** \`sudo apt install ./lunge_${VERSION}-1_amd64.deb\`"
-            echo "- **Fedora/RHEL/openSUSE:** \`sudo dnf install ./lunge-${VERSION}-1.x86_64.rpm\`"
+            echo "- **Ubuntu 22.04+, Debian 12+, and derivatives:** \`sudo apt install ./lunge_${VERSION}-1_amd64.deb\`"
+            echo "- **Fedora, RHEL 10:** \`sudo dnf install ./lunge-${VERSION}-1.x86_64.rpm\`"
+            echo "- **openSUSE Leap 16, Tumbleweed:** \`sudo zypper install --allow-unsigned-rpm ./lunge-${VERSION}-1.x86_64.rpm\`"
+            echo "- Linux packages need glibc 2.35 or newer."
             echo "- **macOS (Apple silicon and Intel):** unpack \`lunge-${VERSION}-macos-universal.tar.gz\` and follow \`README-macos.txt\` inside. This build is not yet signed or notarized."
             echo "- **Windows (x86_64):** unzip \`lunge-${VERSION}-windows-x86_64.zip\` and follow \`README-windows.txt\` inside. This build is not yet code-signed."
             echo
