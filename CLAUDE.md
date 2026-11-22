@@ -134,6 +134,19 @@ pixels, names, logos, icons, strings, or layout.
   Revisit only with a concrete reason.
 - Toolchain pinned in `rust-toolchain.toml`; dependencies locked in
   `Cargo.lock`; CI actions pinned by commit SHA.
+- Linux glibc floor is 2.35 (owner decision 2026-11-22). CI's
+  `package-linux` job builds the `.deb`/`.rpm` inside a digest-pinned
+  `ubuntu:22.04` container (not the `ubuntu-22.04` runner label, which
+  GitHub will retire) and fails if the binary needs a newer glibc. That
+  covers Ubuntu 22.04+ and derivatives (Mint 21+, Pop!_OS 22.04+, Zorin
+  17+, elementary 7+), Debian 12+/LMDE 6+, Fedora, openSUSE Leap 16 and
+  Tumbleweed, and RHEL 10; RHEL/Rocky 9 (2.34) and SLE 15 are out.
+  `smoke-test-linux` installs and launches each build on Ubuntu 22.04 and
+  24.04, Debian 13, Fedora, and openSUSE Leap 16 via
+  `packaging/linux/smoke-test.sh` (runnable locally with Docker). The
+  README's distro list must match what that job tests; derivatives and
+  RHEL are described as expected to work, not tested. Raising the floor
+  drops distros, so it needs the owner's say-so.
 - Before committing: `cargo fmt --all`,
   `cargo clippy --workspace --all-targets -- -D warnings`,
   `cargo test --workspace`.
@@ -146,3 +159,78 @@ pixels, names, logos, icons, strings, or layout.
   are expensive on a private repo).
 - Work is tracked in Linear (project P-BRI-10); M0–M4 milestones, tickets
   from BRI-160 on.
+
+## Linux package repositories (BRI-191): planned, not built yet
+
+Goal: `apt install lunge` / `dnf install lunge` from our own signed repos,
+so Linux users get updates with the rest of their system. Nothing below
+exists in code yet; keep this section matching what's actually built.
+
+Settled direction:
+
+- **Hosting (owner decision 2026-11-22):** `packages.hightrailstudios.com`,
+  an org-wide package host with its own S3 bucket and its own CloudFront
+  distribution, separate from the `hightrailstudios.com` site (whose
+  `/lunge` page is Lunge's marketing/docs and links here). Private bucket,
+  origin access control, no S3 website endpoint, no CloudFront function.
+  Nothing bills by the hour. Keeping it apart means a site deploy
+  (`s3 sync --delete`) can never touch the repos, and the publish role can
+  be scoped to just this bucket and distribution.
+- **Layout:** each tool owns a prefix: `/lunge/deb/` (apt, suite
+  `stable`), `/lunge/rpm/` (rpm-md), and the public key under `/keys/`.
+  Lunge's publish job only ever writes under `/lunge/`, so a future tool's
+  repo can't be clobbered by Lunge's stateless rebuild.
+- **The repo is a build artifact.** A stateless script regenerates the
+  whole apt and rpm trees from the `.deb`/`.rpm` assets on GitHub Releases
+  (`apt-ftparchive` + `createrepo_c`, no aptly/reprepro database). If the
+  bucket is lost, rerun the workflow. No bucket versioning needed for the
+  same reason.
+- **Infra lives outside this repo:** the bucket, distribution, certificate
+  and DNS go in `terraform-environments` (the `hightrail-prod` account;
+  the Route 53 zone is in `common`). Chronkeeper's
+  `infrastructure/modules/static_site` already builds exactly this shape
+  (private bucket + OAC + ACM + CloudFront + alias records); the package
+  host would be its second user, so promote it to a shared module rather
+  than copy it.
+- **Publishing from CI:** GitHub OIDC (provider in
+  `terraform-environments/modules/core/global`) to an IAM role that trusts
+  only this repo's `main` branch / release environment, allowed to list
+  the bucket, put/get/delete under `lunge/*`, and
+  `cloudfront:CreateInvalidation` on that one distribution. No long-lived
+  AWS keys in GitHub.
+- **Upload order:** packages (`pool/`, `Packages/`) first, signed metadata
+  (`InRelease`, `Release.gpg`, `repomd.xml(.asc)`) last, then invalidate
+  only the metadata paths. Clients must never see metadata that points at a
+  file not uploaded yet. Package files are immutable (long cache); metadata
+  gets a short TTL. Don't delete old package versions in the same publish.
+- **Signing:** one OpenPGP key for both repos. Primary key stays offline
+  with the owner; CI holds only a signing subkey with an expiry, in a
+  GitHub environment secret. apt verifies signed `InRelease`; for RPM, both
+  the packages (`rpmsign`, so `gpgcheck=1`) and `repomd.xml`
+  (`repo_gpgcheck=1`). Sign the `.rpm` before the GitHub Release is
+  created so the release asset, `SHA256SUMS`, and the repo all carry the
+  same file. Use SHA-256 digests (Fedora's rpm rejects SHA-1). The key's
+  fingerprint is published on the website and in the README, not only next
+  to the key.
+- **Key expiry is an outage.** When the subkey expires, every user's
+  `apt update`/`dnf` fails until they fetch the new public key. Track the
+  expiry date and rotate well ahead of it.
+- **apt client config:** a deb822 `.sources` file with `Signed-By:` pointing
+  at a keyring in `/usr/share/keyrings/`. Never `apt-key`, never a key in
+  `trusted.gpg.d` (that trusts our key for every repo on the machine).
+- **Test before publishing:** CI builds the repo into a temp dir, serves it
+  locally, and installs from it with signature checks on clean Ubuntu and
+  Fedora containers, like the existing package smoke tests.
+
+Open decisions (owner): key algorithm (RSA 4096 for widest rpm
+compatibility vs. Ed25519); whether the key is a High Trail org key or
+Lunge-only; whether the `.deb`/`.rpm` themselves install the repo config
+and keyring (the "download once, then updates arrive" pattern, which also
+rotates the key for users automatically).
+
+Flatpak (BRI-189) is not part of this. Self-hosting an OSTree repo on S3
+is possible but fiddly; Flathub is the usual route and gives the real
+one-click install in GNOME Software/KDE Discover. Either way the sandbox
+conflicts with how Lunge works (it runs the host's `aws` CLI and reads
+`~/.aws`), which needs host-command and filesystem permissions that
+Flathub reviewers question. Work that out before promising Flatpak.

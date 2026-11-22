@@ -38,11 +38,41 @@ jobs:
       - run: cargo build --workspace --locked
       - run: cargo test --workspace --locked
 
+  # Builds the .deb and .rpm inside Ubuntu 22.04, so the binary needs glibc
+  # 2.35 at most and installs on Ubuntu 22.04 and its derivatives (Mint 21,
+  # Pop!_OS 22.04, Zorin 17, elementary 7), Debian 12, and newer. Built on
+  # the ubuntu-24.04 runner directly it would need 2.39. A pinned image
+  # rather than the ubuntu-22.04 runner label, which GitHub will retire.
   package-linux:
     needs: check
     runs-on: ubuntu-24.04
+    container:
+      image: ubuntu:22.04@sha256:f64b2ffc2f10ab8f8505aa56b2664bd846cbb9df87c7e2532e30f7667021c0e6
+    env:
+      # The glibc the binary may require, at most. Raising it drops distros.
+      GLIBC_FLOOR: "2.35"
+      RUSTUP_VERSION: 1.29.3
+      RUSTUP_SHA256: b1c8cb14e30889e7e2999e6b69e62d9e9b9ffc0f4df8180564d306d9680e6c55
     steps:
+      # gcc links the binary and builds ring; dpkg-dev gives cargo-deb
+      # dpkg-shlibdeps, which writes the libc6 (>= 2.35) dependency.
+      - name: Install build tools
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+            ca-certificates curl git gcc libc6-dev dpkg-dev >/dev/null
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # rustup-init at a pinned version and checksum; it then installs the
+      # toolchain pinned in rust-toolchain.toml.
+      - name: Install Rust
+        run: |
+          set -eu
+          url="https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/x86_64-unknown-linux-gnu/rustup-init"
+          curl --proto '=https' --tlsv1.2 -sSfo /tmp/rustup-init "$url"
+          echo "${RUSTUP_SHA256}  /tmp/rustup-init" | sha256sum -c -
+          chmod +x /tmp/rustup-init
+          /tmp/rustup-init -y -q --profile minimal --default-toolchain none
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
@@ -51,30 +81,14 @@ jobs:
       - run: cargo deb -p lunge-gui -- --locked
       # Reuses the release binary cargo-deb just built.
       - run: cargo generate-rpm -p crates/lunge-gui
-      # Install each package on a clean distro and confirm the window opens
-      # (exit 124 = still running when timeout fired), then uninstall cleanly.
-      # Catches runtime (dlopen) libraries missing from the package metadata.
-      - name: Smoke-test .deb on clean Ubuntu
+      - name: Check the glibc floor
         run: |
-          docker run --rm -v "$PWD/target/debian:/pkgs:ro" ubuntu:24.04 bash -euc '
-            export DEBIAN_FRONTEND=noninteractive
-            apt-get update -qq
-            apt-get install -y -qq --no-install-recommends /pkgs/*.deb
-            apt-get install -y -qq --no-install-recommends xvfb xauth
-            rc=0; xvfb-run -a timeout 5 lunge || rc=$?
-            [ "$rc" -eq 124 ] || { echo "lunge exited early ($rc)"; exit 1; }
-            apt-get remove -y -qq lunge
-            [ ! -e /usr/bin/lunge ]'
-      - name: Smoke-test .rpm on clean Fedora
-        run: |
-          docker run --rm -v "$PWD/target/generate-rpm:/pkgs:ro" fedora:43 bash -euc '
-            dnf install -y -q /pkgs/*.rpm
-            dnf install -y -q xorg-x11-server-Xvfb
-            Xvfb :99 & sleep 2
-            rc=0; DISPLAY=:99 timeout 5 lunge || rc=$?
-            [ "$rc" -eq 124 ] || { echo "lunge exited early ($rc)"; exit 1; }
-            dnf remove -y -q lunge
-            [ ! -e /usr/bin/lunge ]'
+          set -eu
+          need=$(objdump -T target/release/lunge | grep -o 'GLIBC_[0-9.]*' | sed 's/GLIBC_//' | sort -uV | tail -1)
+          echo "lunge needs glibc $need (floor $GLIBC_FLOOR)"
+          dpkg-deb -f target/debian/*.deb Depends
+          top=$(printf '%s\n%s\n' "$need" "$GLIBC_FLOOR" | sort -V | tail -1)
+          [ "$top" = "$GLIBC_FLOOR" ] || { echo "binary needs glibc $need, above the $GLIBC_FLOOR floor"; exit 1; }
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: linux-packages
@@ -84,3 +98,28 @@ jobs:
           if-no-files-found: error
           # Short retention: these are per-commit builds, not releases.
           retention-days: 14
+
+  # Installs each package on clean containers spanning the supported range
+  # (oldest and newest of each family) and confirms the window opens, then
+  # uninstalls. One job, run in turn: each extra job bills at least a minute.
+  # Floating distro tags on purpose: this checks the distros as users get
+  # them today, not a frozen snapshot.
+  smoke-test-linux:
+    needs: package-linux
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: linux-packages
+          path: dist
+      - name: .deb on Ubuntu 22.04 (glibc floor)
+        run: packaging/linux/smoke-test.sh ubuntu:22.04 dist/debian/*.deb
+      - name: .deb on Ubuntu 24.04
+        run: packaging/linux/smoke-test.sh ubuntu:24.04 dist/debian/*.deb
+      - name: .deb on Debian 13
+        run: packaging/linux/smoke-test.sh debian:13 dist/debian/*.deb
+      - name: .rpm on Fedora 45
+        run: packaging/linux/smoke-test.sh fedora:45 dist/generate-rpm/*.rpm
+      - name: .rpm on openSUSE Leap 16
+        run: packaging/linux/smoke-test.sh opensuse/leap:16.0 dist/generate-rpm/*.rpm

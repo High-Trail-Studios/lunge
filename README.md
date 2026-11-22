@@ -185,8 +185,9 @@ Download the latest build from the repository's **Releases** page:
 
 | Platform | File | Install |
 |---|---|---|
-| Debian / Ubuntu | `lunge_<version>-1_amd64.deb` | `sudo apt install ./lunge_<version>-1_amd64.deb` |
-| Fedora / RHEL / openSUSE | `lunge-<version>-1.x86_64.rpm` | `sudo dnf install ./lunge-<version>-1.x86_64.rpm` |
+| Ubuntu 22.04+, Debian 12+, and derivatives (Mint, Pop!_OS, Zorin, elementary) | `lunge_<version>-1_amd64.deb` | `sudo apt install ./lunge_<version>-1_amd64.deb` |
+| Fedora, RHEL 10 | `lunge-<version>-1.x86_64.rpm` | `sudo dnf install ./lunge-<version>-1.x86_64.rpm` |
+| openSUSE Leap 16, Tumbleweed | `lunge-<version>-1.x86_64.rpm` | `sudo zypper install --allow-unsigned-rpm ./lunge-<version>-1.x86_64.rpm` |
 | macOS (Apple silicon and Intel) | `lunge-<version>-macos-universal.tar.gz` | Unpack and follow `README-macos.txt` inside |
 | Windows 10/11 (x86_64) | `lunge-<version>-windows-x86_64.zip` | Unzip and follow `README-windows.txt` inside (portable, nothing installed) |
 
@@ -198,6 +199,13 @@ replace it. The Windows build is not code-signed either: SmartScreen warns
 before the first run, and Windows 11 with Smart App Control turned on won't
 run it at all. Releases are x86_64 only on Linux and Windows for now, and
 0.x versions are marked as pre-releases.
+
+The Linux packages need glibc 2.35 or newer. CI installs and launches every
+build on Ubuntu 22.04 and 24.04, Debian 13, Fedora, and openSUSE Leap 16.
+Mint, Pop!_OS, Zorin, and elementary aren't tested directly; they're expected
+to work through their Ubuntu base. RHEL 10 is expected to work but isn't
+tested. RHEL/Rocky 9 and older (glibc 2.34) aren't supported. The packages
+aren't GPG-signed yet; signed apt and dnf repositories are planned.
 
 Between releases, CI attaches `.deb`/`.rpm` packages to every push to `main`
 (workflow run artifacts), and the **Build macOS** and **Build Windows**
