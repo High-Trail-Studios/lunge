@@ -5,13 +5,47 @@
   </picture>
 </h1>
 
-A small desktop app for AWS SSO sessions. See every SSO profile, know at a
-glance which sessions are live or expired, re-login in one click, and open the
-AWS console for a role in one click.
+<p align="center">
+  <b>A small desktop app for AWS SSO sessions that never holds your credentials.</b>
+</p>
 
-> **Status: pre-alpha.** Listing sessions with their state, one-click login,
-> and light/dark theming work. Opening the AWS console (M2) is not built
-> yet. Expect rough edges; see [Limitations](#limitations).
+<p align="center">
+  <a href="#install">Install</a> ·
+  <a href="#no-credential-custody">How it handles credentials</a> ·
+  <a href="#limitations">Limitations</a> ·
+  <a href="https://github.com/High-Trail-Studios/lunge/releases">Releases</a>
+</p>
+
+<p align="center">
+  <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/github/license/High-Trail-Studios/lunge"></a>
+  <a href="https://github.com/High-Trail-Studios/lunge/actions/workflows/ci.yml"><img alt="CI status" src="https://github.com/High-Trail-Studios/lunge/actions/workflows/ci.yml/badge.svg?branch=main"></a>
+  <a href="https://github.com/High-Trail-Studios/lunge/releases"><img alt="Latest release" src="https://img.shields.io/github/v/release/High-Trail-Studios/lunge?include_prereleases&sort=semver"></a>
+</p>
+
+**Lunge** is a cross-platform desktop app for AWS IAM Identity Center (SSO),
+written in Rust and built on the AWS CLI. It runs on macOS, Linux, and
+Windows.
+
+It's made for working across many AWS accounts: see every SSO session and
+whether it's live, log in again in one click, see every account and role
+you can use, and give each one a profile to use from the terminal
+(`AWS_PROFILE=<name>`).
+
+Lunge never stores your credentials. The AWS CLI owns every token; Lunge
+reads the CLI's files and runs the CLI to act. See
+[No credential custody](#no-credential-custody).
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/accounts-dark.png">
+    <img alt="Lunge showing a live SSO session with its accounts, roles, profiles, and regions in a table" src="assets/screenshots/accounts-light.png" width="880">
+  </picture>
+</p>
+
+> **Status: pre-alpha.** Sessions and their state, one-click login, listing
+> every account and role, and creating, renaming, and setting the region of
+> profiles work. Opening the AWS console (M2) is not built yet. Expect rough
+> edges; see [Limitations](#limitations).
 
 ## What you see
 
