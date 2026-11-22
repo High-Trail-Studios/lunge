@@ -8,7 +8,7 @@
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use crate::config::{self, ConfigError};
 use crate::login::AwsCli;
@@ -116,8 +116,8 @@ impl AwsCli {
         settings.push(("sso_session", new.session.as_str()));
 
         for (index, (key, value)) in settings.into_iter().enumerate() {
-            let output = Command::new(&self.program)
-                .args(&self.leading_args)
+            let output = self
+                .command()
                 .args(["configure", "set", key, value, "--profile", &new.name])
                 .arg("--no-cli-auto-prompt")
                 // Write exactly the file Lunge read.

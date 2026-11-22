@@ -1,0 +1,74 @@
+name: Build Windows
+
+# On demand (Actions tab -> "Build Windows" -> Run workflow, or
+# `gh workflow run build-windows.yml`), and called by the Release workflow.
+# The CI workflow already checks Windows on every push; this builds the
+# release zip. Also runs on pull requests that change this file, since
+# on-demand runs only work once the workflow is on the default branch.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths: [.github/workflows/build-windows.yml]
+  workflow_call:
+    inputs:
+      ref:
+        description: Commit to build
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  build:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+      # Installs the toolchain pinned in rust-toolchain.toml.
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # .cargo/config.toml links the C runtime statically.
+      - run: cargo build --release --locked -p lunge-gui
+
+      - name: Package zip
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $out = 'dist/lunge-windows-x86_64'
+          New-Item -ItemType Directory -Force $out | Out-Null
+          Copy-Item target/release/lunge.exe, LICENSE, NOTICE, packaging/windows/README-windows.txt $out
+          # Import names are plain ASCII in the exe. Fail if it still needs
+          # the Visual C++ Redistributable (crt-static didn't apply).
+          if (Select-String -Path "$out/lunge.exe" -Pattern 'VCRUNTIME140.dll' -SimpleMatch -Quiet) {
+            throw 'lunge.exe depends on VCRUNTIME140.dll'
+          }
+          Compress-Archive -Path $out -DestinationPath dist/lunge-windows-x86_64.zip
+          Get-ChildItem dist
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: lunge-windows-x86_64
+          path: dist/lunge-windows-x86_64.zip
+          if-no-files-found: error
+          retention-days: 14
+
+      # After upload, so a smoke-test problem never withholds the download.
+      # The runner has no GPU, so this also exercises wgpu's software
+      # (WARP) fallback. Confirms a window stays open for 8 seconds.
+      - name: Smoke-test launch
+        run: |
+          $p = Start-Process -FilePath dist/lunge-windows-x86_64/lunge.exe -PassThru
+          Start-Sleep -Seconds 8
+          if ($p.HasExited) {
+            throw "lunge exited early (status $($p.ExitCode))"
+          }
+          Stop-Process -Id $p.Id
+          'lunge started and stayed running'

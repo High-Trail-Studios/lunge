@@ -52,8 +52,15 @@ jobs:
     with:
       ref: ${{ github.event.workflow_run.head_sha }}
 
+  windows:
+    needs: plan
+    if: needs.plan.outputs.release == 'true'
+    uses: ./.github/workflows/build-windows.yml
+    with:
+      ref: ${{ github.event.workflow_run.head_sha }}
+
   publish:
-    needs: [plan, macos]
+    needs: [plan, macos, windows]
     runs-on: ubuntu-24.04
     permissions:
       contents: write # create the tag and the release
@@ -80,6 +87,10 @@ jobs:
         with:
           name: lunge-macos-universal
           path: dist/macos
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: lunge-windows-x86_64
+          path: dist/windows
 
       - name: Collect release assets
         run: |
@@ -87,6 +98,7 @@ jobs:
           mkdir release
           cp dist/linux/debian/*.deb dist/linux/generate-rpm/*.rpm release/
           cp dist/macos/lunge-macos-universal.tar.gz "release/lunge-${VERSION}-macos-universal.tar.gz"
+          cp dist/windows/lunge-windows-x86_64.zip "release/lunge-${VERSION}-windows-x86_64.zip"
           (cd release && sha256sum -- * > SHA256SUMS)
           ls -la release
           cat release/SHA256SUMS
@@ -102,8 +114,9 @@ jobs:
             echo "- **Debian/Ubuntu:** \`sudo apt install ./lunge_${VERSION}-1_amd64.deb\`"
             echo "- **Fedora/RHEL/openSUSE:** \`sudo dnf install ./lunge-${VERSION}-1.x86_64.rpm\`"
             echo "- **macOS (Apple silicon and Intel):** unpack \`lunge-${VERSION}-macos-universal.tar.gz\` and follow \`README-macos.txt\` inside. This build is not yet signed or notarized."
+            echo "- **Windows (x86_64):** unzip \`lunge-${VERSION}-windows-x86_64.zip\` and follow \`README-windows.txt\` inside. This build is not yet code-signed."
             echo
-            echo "Requires AWS CLI v2. Verify downloads with \`sha256sum -c SHA256SUMS\` (macOS: \`shasum -a 256 -c SHA256SUMS\`)."
+            echo "Requires AWS CLI v2. Verify downloads with \`sha256sum -c SHA256SUMS\` (macOS: \`shasum -a 256 -c SHA256SUMS\`; Windows: compare \`Get-FileHash <file>\` with the line in SHA256SUMS)."
             echo
             echo "## Changes${prev:+ since $prev}"
             echo

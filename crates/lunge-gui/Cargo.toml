@@ -20,6 +20,12 @@ serde.workspace = true
 # Decodes the bundled logo; already in the tree (via the clipboard), PNG only.
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 
+# wgpu on Windows only. glow needs a real OpenGL driver, which VMs, RDP and
+# VDI sessions (Amazon WorkSpaces among them) and CI runners often lack;
+# wgpu's DirectX 12 backend falls back to Windows' software renderer (WARP).
+[target.'cfg(windows)'.dependencies]
+eframe = { workspace = true, features = ["wgpu"] }
+
 [lints]
 workspace = true
 

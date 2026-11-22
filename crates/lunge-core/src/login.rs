@@ -63,12 +63,26 @@ impl AwsCli {
         }
     }
 
+    /// A `Command` for the CLI with any leading arguments already added.
+    pub(crate) fn command(&self) -> Command {
+        let mut command = Command::new(&self.program);
+        command.args(&self.leading_args);
+        // aws.exe is a console program: without this, Windows opens a
+        // console window for every call Lunge (a GUI app) makes.
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            command.creation_flags(CREATE_NO_WINDOW);
+        }
+        command
+    }
+
     /// Starts `aws sso login --sso-session <session>`. The CLI opens the
     /// browser itself. Returns immediately; poll the returned process.
     pub fn start_login(&self, session: &str, cache_dir: &Path) -> Result<LoginProcess, LoginError> {
-        let mut command = Command::new(&self.program);
+        let mut command = self.command();
         command
-            .args(&self.leading_args)
             .args(["sso", "login", "--sso-session", session])
             // An AWS_CLI_AUTO_PROMPT setting would otherwise make the CLI
             // wait on stdin, which Lunge doesn't provide.

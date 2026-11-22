@@ -1,5 +1,8 @@
 //! Lunge desktop app: a thin egui front end over `lunge-core`.
 
+// A GUI app on Windows: without this, launching Lunge also opens a console.
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 mod add_session;
 mod app;
 mod create_dialog;
@@ -23,6 +26,9 @@ fn main() -> eframe::Result {
                 eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png"))
                     .expect("bundled icon is a valid PNG"),
             ),
+        // See the Windows dependencies in Cargo.toml for why.
+        #[cfg(windows)]
+        renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     };
     eframe::run_native(

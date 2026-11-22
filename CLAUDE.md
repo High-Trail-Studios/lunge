@@ -116,12 +116,18 @@ pixels, names, logos, icons, strings, or layout.
 
 ## Conventions
 
-- Targets: macOS and Linux. Windows is out of scope.
+- Targets: macOS, Linux, and Windows x86_64 (owner decision 2026-11-21).
+  Spawn the CLI only through `AwsCli::command()`, which hides the console
+  window on Windows. Windows ships as a portable, unsigned zip for now
+  (owner decision); code signing and Windows ARM64 are deferred.
 - Preferences: eframe `persistence` saves only the `Prefs` struct (zoom,
   theme, CLI drawer open) and window geometry; `persist_egui_memory` is off so no UI state
   derived from AWS files reaches disk. Never put AWS data in `Prefs`.
 - Renderer: eframe with `glow`, not the default `wgpu` (smaller binary and
-  build). Revisit only with a concrete reason.
+  build), except on Windows, which uses `wgpu` (owner decision 2026-11-21):
+  glow needs a real OpenGL driver, which Windows VMs, RDP/VDI sessions and
+  CI runners often lack, while wgpu's DX12 backend falls back to WARP.
+  Revisit only with a concrete reason.
 - Toolchain pinned in `rust-toolchain.toml`; dependencies locked in
   `Cargo.lock`; CI actions pinned by commit SHA.
 - Before committing: `cargo fmt --all`,
@@ -130,8 +136,9 @@ pixels, names, logos, icons, strings, or layout.
 - Releasing: bump `version` under `[workspace.package]` in `Cargo.toml`,
   run `cargo check` so `Cargo.lock` follows (CI uses `--locked`), commit,
   and push to `main`. When CI passes for that commit, the Release workflow
-  builds the macOS binary, takes CI's tested `.deb`/`.rpm`, and publishes
-  tag `vX.Y.Z` with all three plus `SHA256SUMS`. Pushes without a version
-  bump don't release (macOS minutes are expensive on a private repo).
+  builds the macOS binary and the Windows zip, takes CI's tested
+  `.deb`/`.rpm`, and publishes tag `vX.Y.Z` with all four plus
+  `SHA256SUMS`. Pushes without a version bump don't release (macOS minutes
+  are expensive on a private repo).
 - Work is tracked in Linear (project P-BRI-10); M0–M4 milestones, tickets
   from BRI-160 on.

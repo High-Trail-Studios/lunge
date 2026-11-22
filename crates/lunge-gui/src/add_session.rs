@@ -31,7 +31,7 @@ pub struct AddSessionForm {
 
 /// Where the session would be written and what's already there.
 pub struct Target {
-    /// `None` when the config location can't be worked out (no HOME).
+    /// `None` when the config location can't be worked out (no home folder).
     pub config_path: Option<PathBuf>,
     /// The config exists but couldn't be read; the CLI can't safely add to
     /// it until it's fixed.
@@ -134,7 +134,7 @@ impl AddSessionForm {
     /// Why Save is unavailable, if it is.
     fn problem(&self, target: &Target) -> Option<String> {
         if target.config_path.is_none() {
-            return Some("can't tell where your AWS config lives (HOME isn't set)".into());
+            return Some("can't tell where your AWS config lives (no home folder found)".into());
         }
         if target.config_broken {
             return Some("fix the AWS config error above first".into());

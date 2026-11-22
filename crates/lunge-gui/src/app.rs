@@ -843,6 +843,16 @@ fn add_session_pane(ui: &mut Ui, pane: AddSessionPane<'_>, inventory: Option<&In
     pane.form.show(ui, pane.show_cli, pane.cli, &target);
 }
 
+/// A file in the AWS CLI's folder, named the way the platform's users write
+/// it: `~` means little to most Windows users.
+fn aws_file(name: &str) -> String {
+    if cfg!(windows) {
+        format!(r"%USERPROFILE%\.aws\{name}")
+    } else {
+        format!("~/.aws/{name}")
+    }
+}
+
 fn access_key_detail(ui: &mut Ui, profile: &AccessKeyProfile) {
     ui.heading(&profile.name);
     let mut details = vec!["Access-key profile".to_string()];
@@ -852,8 +862,8 @@ fn access_key_detail(ui: &mut Ui, profile: &AccessKeyProfile) {
     ui.label(RichText::new(details.join("  ·  ")).weak());
     ui.add_space(10.0);
     let file = match profile.source {
-        KeySource::CredentialsFile => "~/.aws/credentials",
-        KeySource::ConfigFile => "~/.aws/config",
+        KeySource::CredentialsFile => aws_file("credentials"),
+        KeySource::ConfigFile => aws_file("config"),
     };
     ui.label(format!(
         "The AWS CLI keeps this profile's keys in {file}. Lunge reads only the profile name, never the keys."
@@ -1157,7 +1167,10 @@ fn account_row(ui: &mut Ui, row: &AccountRow, have_listing: bool) -> Option<RowC
                         Some(profile) => {
                             if ui
                                 .small_button("Rename")
-                                .on_hover_text("Give this profile your own name in ~/.aws/config")
+                                .on_hover_text(format!(
+                                    "Give this profile your own name in {}",
+                                    aws_file("config")
+                                ))
                                 .clicked()
                             {
                                 click = Some(RowClick::Rename(profile.name.clone()));

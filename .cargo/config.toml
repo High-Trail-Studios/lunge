@@ -1,0 +1,4 @@
+# Link the C runtime into lunge.exe so it runs without the Visual C++
+# Redistributable installed (a bare Windows install, a locked-down laptop).
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
