@@ -14,6 +14,7 @@
 use std::fmt;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use time::OffsetDateTime;
 
@@ -72,7 +73,7 @@ impl fmt::Display for RenameError {
             Self::ContainsSecrets => write!(
                 f,
                 "your config file contains access keys, so Lunge won't rewrite it; \
-                 move keys to ~/.aws/credentials or rename the profile by hand"
+                 move them to your AWS credentials file or rename the profile by hand"
             ),
             Self::ChangedSincePreview => write!(
                 f,
@@ -128,7 +129,7 @@ pub fn plan_profile_rename(
     if old_name == "default" {
         return Err(RenameError::IsDefault);
     }
-    let target = std::fs::canonicalize(config_path)?;
+    let target = without_verbatim_prefix(std::fs::canonicalize(config_path)?);
     let original = std::fs::read(&target)?;
     let text = std::str::from_utf8(&original).map_err(|_| {
         RenameError::Parse(ParseError {
@@ -276,12 +277,51 @@ impl RenamePlan {
 
         let temp = dir.join(format!(".{file_name}.lunge-tmp-{}", std::process::id()));
         if let Err(e) = write_new_file(&temp, self.updated.as_bytes(), &permissions)
-            .and_then(|()| std::fs::rename(&temp, &self.target))
+            .and_then(|()| replace(&temp, &self.target))
         {
             let _ = std::fs::remove_file(&temp);
             return Err(e.into());
         }
         Ok(backup)
+    }
+}
+
+/// `canonicalize` on Windows returns `\\?\C:\...`; drop the `\\?\` from
+/// drive paths so the preview shows the path the way people know it.
+fn without_verbatim_prefix(path: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    {
+        use std::path::{Component, Prefix};
+        if let Some(Component::Prefix(prefix)) = path.components().next()
+            && let Prefix::VerbatimDisk(_) = prefix.kind()
+            && let Some(rest) = path.to_str().and_then(|s| s.strip_prefix(r"\\?\"))
+        {
+            return PathBuf::from(rest);
+        }
+    }
+    path
+}
+
+/// Moves `temp` over `target`. On Windows this fails with "access denied"
+/// while another program (often antivirus or the search indexer) has the
+/// file open, usually only for a moment, so retry briefly before giving up.
+fn replace(temp: &Path, target: &Path) -> io::Result<()> {
+    const ATTEMPTS: u32 = 5;
+    let mut attempt = 1;
+    loop {
+        match std::fs::rename(temp, target) {
+            Err(e) if cfg!(windows) && e.kind() == io::ErrorKind::PermissionDenied => {
+                if attempt == ATTEMPTS {
+                    return Err(io::Error::new(
+                        e.kind(),
+                        format!("{e}; another program may have the config file open"),
+                    ));
+                }
+                attempt += 1;
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            result => return result,
+        }
     }
 }
 

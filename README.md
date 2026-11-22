@@ -146,7 +146,11 @@ credentials to other tools or replace the AWS CLI; it requires it.
 
 ## Platforms
 
-macOS and Linux. Windows is not supported.
+macOS, Linux, and Windows 10/11 (x86_64). Windows on ARM isn't built yet.
+
+The Windows build draws with Direct3D 12 (wgpu) rather than OpenGL so that,
+where there's no GPU driver (VMs, remote desktop, Amazon WorkSpaces), it can
+fall back to Windows' built-in software renderer. macOS and Linux use OpenGL.
 
 ## Requirements
 
@@ -165,22 +169,26 @@ Download the latest build from the repository's **Releases** page:
 | Debian / Ubuntu | `lunge_<version>-1_amd64.deb` | `sudo apt install ./lunge_<version>-1_amd64.deb` |
 | Fedora / RHEL / openSUSE | `lunge-<version>-1.x86_64.rpm` | `sudo dnf install ./lunge-<version>-1.x86_64.rpm` |
 | macOS (Apple silicon and Intel) | `lunge-<version>-macos-universal.tar.gz` | Unpack and follow `README-macos.txt` inside |
+| Windows 10/11 (x86_64) | `lunge-<version>-windows-x86_64.zip` | Unzip and follow `README-windows.txt` inside (portable, nothing installed) |
 
 Each release includes `SHA256SUMS` for checking downloads
 (`sha256sum -c SHA256SUMS`, or `shasum -a 256 -c SHA256SUMS` on macOS). The
 macOS build is not yet signed or notarized, so Gatekeeper blocks it until you
 clear its quarantine flag (see `README-macos.txt`); a signed `.dmg` will
-replace it. Releases are x86_64 only on Linux for now, and 0.x versions are
-marked as pre-releases.
+replace it. The Windows build is not code-signed either: SmartScreen warns
+before the first run, and Windows 11 with Smart App Control turned on won't
+run it at all. Releases are x86_64 only on Linux and Windows for now, and
+0.x versions are marked as pre-releases.
 
 Between releases, CI attaches `.deb`/`.rpm` packages to every push to `main`
-(workflow run artifacts), and the **Build macOS** workflow can be run on
-demand.
+(workflow run artifacts), and the **Build macOS** and **Build Windows**
+workflows can be run on demand.
 
 ## Build from source
 
 You need a C toolchain (Linux: `build-essential` or equivalent; macOS: Xcode
-Command Line Tools) and [rustup](https://rustup.rs). The Rust version is
+Command Line Tools; Windows: Visual Studio Build Tools with "Desktop
+development with C++") and [rustup](https://rustup.rs). The Rust version is
 pinned in `rust-toolchain.toml` and installed automatically.
 
 ```sh

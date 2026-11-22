@@ -26,7 +26,7 @@
 use std::fmt;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use crate::config::{self, ConfigError};
 use crate::login::AwsCli;
@@ -181,8 +181,8 @@ impl AwsCli {
             return Err(SessionError::NameTaken(name.clone()));
         }
 
-        let mut child = Command::new(&self.program)
-            .args(&self.leading_args)
+        let mut child = self
+            .command()
             .args(["configure", "sso-session"])
             .arg("--no-cli-auto-prompt")
             // Write exactly the file Lunge read.

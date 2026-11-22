@@ -37,7 +37,10 @@ Optional: copy it somewhere on your PATH, e.g.
 What it touches
 ---------------
 Lunge only reads ~/.aws/config, profile names in ~/.aws/credentials, and the
-AWS CLI's SSO token cache; it runs `aws sso login` when you ask it to. The
-only file it writes is its display preferences (zoom, theme, window size) in
-~/Library/Application Support/lunge/. Delete that folder and the binary to
-remove it completely.
+AWS CLI's SSO token cache; it runs the AWS CLI when you ask it to. It
+changes your AWS config only when you ask: adding a session or profile goes
+through the AWS CLI, and renaming a profile changes only that profile's
+header line, after a preview, with a backup saved next to the file. The only
+other file it writes is its display preferences (zoom, theme, window size)
+in ~/Library/Application Support/Lunge/. Delete that folder and the binary
+to remove it completely.
