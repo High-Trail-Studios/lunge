@@ -33,8 +33,8 @@ const LOGIN_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const IDLE_REPAINT_INTERVAL: Duration = Duration::from_secs(10);
 
 /// Toolbar logo: "Lunge" wordmark and mark on brand navy, rendered 4x
-/// oversize so it stays sharp when zoomed. Derived from
-/// assets/brand/logo.png (cropped, tagline removed, scaled down).
+/// oversize so it stays sharp when zoomed. Built by
+/// assets/brand/make_logos.py (the master logo, tagline removed).
 const LOGO_PNG: &[u8] = include_bytes!("../assets/logo-toolbar.png");
 const LOGO_HEIGHT: f32 = 32.0;
 

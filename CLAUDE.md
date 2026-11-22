@@ -87,23 +87,31 @@ change that would weaken it needs an explicit decision from the owner.
   accordion with only AWS in it; don't add Azure/GCP placeholders or a
   provider abstraction until a second provider is actually being built.
 - No AWS logo (trademark); the AWS header uses text plus a generic orange.
-- Brand: the master logo is `assets/brand/logo.png` (drawn on navy
-  `#141B35`). The toolbar uses a derived copy,
-  `crates/lunge-gui/assets/logo-toolbar.png` (cropped, tagline removed, 128px
-  tall); regenerate it from the master rather than editing it. The header bar
-  is brand navy in both themes so the logo sits on its own background.
+- Brand: the logo files are generated. `assets/brand/original/` holds the
+  logos as supplied (the mark with three slanted pieces beside the L);
+  `assets/brand/make_logos.py` (Pillow) builds the current "oversized L" mark
+  from them (owner decision 2026-11-22: pieces dropped, the L enlarged into
+  their space, the cloud nested in its crook) and writes
+  `assets/brand/logo.png` (the master, white logo on navy `#141B35`), the
+  transparent `logo_transparent_{black,white,notext}.png`, the README copies,
+  and the toolbar logo, then runs `make_icon.py`. Rerun it rather than
+  editing any output. It works on rasters, so it's a stand-in until the mark
+  is redrawn as a vector.
+- Toolbar: `crates/lunge-gui/assets/logo-toolbar.png` is the master
+  cropped, tagline removed, 128px tall. The header bar is brand navy in both
+  themes so the logo sits on its own background.
 - App icon: `assets/brand/make_icon.py` (Pillow) builds it from
   `assets/brand/logo_transparent_notext.png`: the logo on a brand-navy
   rounded square on Apple's icon grid. It writes `assets/brand/icon-1024.png`
   (master, for a future `.app`) and `crates/lunge-gui/assets/icon.png` (512px,
   built into the binary as the Dock/window icon) and `icon-256.png` (Linux
-  hicolor). Rerun the script rather than editing the outputs.
-- Transparent logos: `assets/brand/logo_transparent_black.png` and
-  `_white.png` ("Lun" in black or white) are kept as supplied. They carry a
-  baked-in ~1px dark outline that shows on light backgrounds, so the README
-  uses edge-cleaned, 1200px-wide copies in `assets/brand/readme/`
-  (`logo-on-light.png`, `logo-on-dark.png`), switched by a `<picture>`
-  element on the reader's light/dark preference.
+  hicolor).
+- Transparent logos: `logo_transparent_black.png` and `_white.png` ("Lun" in
+  black or white) inherit a baked-in ~1px dark outline from the originals
+  that shows on light backgrounds, so the README uses edge-cleaned,
+  1200px-wide copies in `assets/brand/readme/` (`logo-on-light.png`,
+  `logo-on-dark.png`, built from the edge-cleaned originals), switched by a
+  `<picture>` element on the reader's light/dark preference.
 
 ## Scope (v1)
 
