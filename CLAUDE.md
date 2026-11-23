@@ -40,13 +40,17 @@ Two in-memory exceptions, both owner-approved:
   profile exists first, because `aws configure set --profile X` silently
   creates X if it doesn't.
 - Adding an SSO session goes through the CLI too (`lunge_core::sessions`,
-  owner decision): `aws configure set` can't write `[sso-session]` blocks
-  (it writes a bogus `sso-session =` line under `[default]` and exits 0),
-  and `aws configure sso-session` has no flags, so Lunge pipes the four
-  answers (name, start URL, region, scopes) into its prompts. Taken names
-  and answers containing line breaks are refused first, and the block is
-  re-read afterwards to check the answers landed in the right keys. Don't
-  replace this with a direct write without the owner's say-so.
+  owner decision): `aws configure set KEY VALUE --sso-session NAME` (AWS
+  CLI 2.34.22+) for `sso_start_url`, `sso_region`,
+  `sso_registration_scopes`, in that order. If the CLI rejects
+  `--sso-session` as unknown, macOS/Linux fall back to piping the four
+  answers into `aws configure sso-session`'s prompts; Windows can't (the
+  CLI's prompt_toolkit reads the console, not stdin, and fails with "No
+  Windows console found"), so it asks the user to update the CLI. Taken
+  names and answers containing line breaks are refused first, a failure
+  after the first key reports which keys landed, and the block is re-read
+  afterwards to check the answers landed in the right keys. Don't replace
+  this with a direct write without the owner's say-so.
 
 Comment this invariant at every point the code touches credential state. Any
 change that would weaken it needs an explicit decision from the owner.

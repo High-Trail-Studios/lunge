@@ -1,30 +1,34 @@
 //! Adding an `[sso-session]` block, through the AWS CLI.
 //!
-//! PREFER THE CLI (owner decision): `aws configure set` can't write
-//! `[sso-session]` blocks (asked to, it writes a bogus `sso-session = …` line
-//! under `[default]` and reports success), and `aws configure sso-session`
-//! has no flags, only prompts. So Lunge runs `aws configure sso-session` and
-//! pipes in the four answers, in the order the CLI asks:
+//! PREFER THE CLI (owner decision): Lunge never writes the block itself.
+//! AWS CLI 2.34.22 and newer can write it directly with
+//! `aws configure set KEY VALUE --sso-session NAME`, one key at a time, in
+//! the order `aws configure sso-session` writes them:
 //!
-//! 1. SSO session name
-//! 2. SSO start URL
-//! 3. SSO region
-//! 4. SSO registration scopes
+//! 1. `sso_start_url`
+//! 2. `sso_region`
+//! 3. `sso_registration_scopes`
 //!
-//! The CLI writes the file only after the last answer, and if it asks
-//! anything more (a newer CLI with an extra prompt, or a re-prompt after it
-//! rejects an answer) it hits end of input and exits without writing. To
-//! keep the prompt sequence predictable, Lunge refuses names that already
-//! exist (the CLI then shows current values) and answers containing line
-//! breaks. Afterwards it re-reads the config and checks the block holds
-//! exactly what was entered, so a misplaced answer is reported, not hidden.
+//! That works the same on every platform. Older CLIs reject `--sso-session`
+//! as an unknown option before writing anything. On macOS and Linux Lunge
+//! then falls back to running `aws configure sso-session` and piping in the
+//! four answers to its prompts (name, start URL, region, scopes). That
+//! fallback can't work on Windows: the CLI's prompt library reads keystrokes
+//! from the console, not from stdin, and fails with "No Windows console
+//! found" when there isn't one. So on Windows an old CLI gets a "please
+//! update" error instead.
+//!
+//! Either way, Lunge refuses names that already exist and answers
+//! containing line breaks first, and afterwards re-reads the config and
+//! checks the block holds exactly what was entered, so a misplaced or
+//! partial write is reported, not hidden.
 //!
 //! No credentials are involved: a session block only records where and how
 //! to sign in. Signing in is a separate `aws sso login` (see
 //! [`crate::login`]).
 
 use std::fmt;
-use std::io::{self, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
@@ -35,14 +39,12 @@ use crate::login::AwsCli;
 /// needs to list accounts and get role credentials.
 pub const DEFAULT_SCOPES: &str = "sso:account:access";
 
-/// The CLI's prompts, in the order it asks them (for showing the user what
-/// will be typed).
-pub const PROMPTS: [&str; 4] = [
-    "SSO session name",
-    "SSO start URL",
-    "SSO region",
-    "SSO registration scopes",
-];
+/// The first AWS CLI release with `aws configure set --sso-session`.
+pub const MIN_CLI_FOR_SET: &str = "2.34.22";
+
+/// The keys a session block gets, in the order they're written; they take
+/// `answers()[1..]`.
+const KEYS: [&str; 3] = ["sso_start_url", "sso_region", "sso_registration_scopes"];
 
 /// The answers to `aws configure sso-session`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -64,6 +66,20 @@ impl NewSession {
             self.region.trim().to_string(),
             normalize_scopes(&self.scopes),
         ]
+    }
+
+    /// The `aws configure set` commands Save runs, for display.
+    pub fn commands(&self) -> Vec<String> {
+        let answers = self.answers();
+        let name = if answers[0].is_empty() {
+            "NAME"
+        } else {
+            answers[0].as_str()
+        };
+        KEYS.iter()
+            .zip(&answers[1..])
+            .map(|(key, value)| format!("aws configure set {key} {value} --sso-session {name}"))
+            .collect()
     }
 
     /// Why these answers can't be used, if they can't. Doesn't check whether
@@ -138,8 +154,17 @@ pub enum SessionError {
     Config(ConfigError),
     CliNotFound(PathBuf),
     Spawn(io::Error),
-    /// The CLI exited with an error; it writes nothing in that case.
+    /// The CLI exited with an error before writing anything.
     Failed(String),
+    /// The CLI wrote some keys of the block, then failed.
+    Partial {
+        name: String,
+        written: Vec<&'static str>,
+        message: String,
+    },
+    /// The CLI has no `configure set --sso-session` and the prompt fallback
+    /// can't run here (Windows).
+    CliTooOld,
     /// The CLI reported success but the block isn't what was entered.
     Mismatch(String),
 }
@@ -156,7 +181,24 @@ impl fmt::Display for SessionError {
                 program.display()
             ),
             Self::Spawn(e) => write!(f, "couldn't run the AWS CLI: {e}"),
-            Self::Failed(message) => write!(f, "aws configure sso-session failed: {message}"),
+            Self::Failed(message) => write!(f, "the AWS CLI couldn't add the session: {message}"),
+            Self::Partial {
+                name,
+                written,
+                message,
+            } => write!(
+                f,
+                "the AWS CLI added [sso-session {name}] with only {} and then failed: {message}. \
+                 Finish it with `aws configure sso-session` in a terminal, or remove it from \
+                 your AWS config",
+                written.join(", ")
+            ),
+            Self::CliTooOld => write!(
+                f,
+                "this AWS CLI is too old to add a session from Lunge on this system; update \
+                 to AWS CLI {MIN_CLI_FOR_SET} or newer, or run `aws configure sso-session` \
+                 in a terminal"
+            ),
             Self::Mismatch(message) => write!(f, "{message}"),
         }
     }
@@ -164,10 +206,18 @@ impl fmt::Display for SessionError {
 
 impl std::error::Error for SessionError {}
 
+/// How one `aws configure set` call went.
+enum SetFailure {
+    /// The CLI doesn't know `--sso-session` (before 2.34.22); nothing was
+    /// written.
+    Unsupported,
+    Other(SessionError),
+}
+
 impl AwsCli {
-    /// Adds `[sso-session NAME]` to the config file at `config_path` by
-    /// answering `aws configure sso-session`'s prompts, then checks what the
-    /// CLI wrote. Blocking: call it off the UI thread.
+    /// Adds `[sso-session NAME]` to the config file at `config_path` through
+    /// the AWS CLI, then checks what the CLI wrote. Blocking: call it off
+    /// the UI thread.
     pub fn create_sso_session(
         &self,
         config_path: &Path,
@@ -181,11 +231,103 @@ impl AwsCli {
             return Err(SessionError::NameTaken(name.clone()));
         }
 
+        for (i, (key, value)) in KEYS.iter().zip(&answers[1..]).enumerate() {
+            match self.set_session_key(config_path, name, key, value) {
+                Ok(()) => {}
+                // Only the first call can find the option missing; nothing
+                // has been written yet.
+                Err(SetFailure::Unsupported) if i == 0 => {
+                    return self.answer_prompts(config_path, &answers);
+                }
+                Err(SetFailure::Unsupported) => {
+                    return Err(SessionError::Partial {
+                        name: name.clone(),
+                        written: KEYS[..i].to_vec(),
+                        message: "the CLI stopped accepting --sso-session".into(),
+                    });
+                }
+                Err(SetFailure::Other(SessionError::Failed(message))) if i > 0 => {
+                    return Err(SessionError::Partial {
+                        name: name.clone(),
+                        written: KEYS[..i].to_vec(),
+                        message,
+                    });
+                }
+                Err(SetFailure::Other(e)) => return Err(e),
+            }
+        }
+        verify(config_path, &answers)
+    }
+
+    /// Runs `aws configure set KEY VALUE --sso-session NAME`.
+    fn set_session_key(
+        &self,
+        config_path: &Path,
+        name: &str,
+        key: &str,
+        value: &str,
+    ) -> Result<(), SetFailure> {
+        let output = self
+            .command()
+            // The option goes last so an old CLI reports it as unknown
+            // rather than misreading the positionals.
+            .args(["configure", "set", key, value, "--sso-session", name])
+            .arg("--no-cli-auto-prompt")
+            // Write exactly the file Lunge read.
+            .env("AWS_CONFIG_FILE", config_path)
+            .env_remove("AWS_PROFILE")
+            .env_remove("AWS_DEFAULT_PROFILE")
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|e| SetFailure::Other(self.spawn_error(e)))?;
+        if output.status.success() {
+            return Ok(());
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("Unknown options") && stderr.contains("--sso-session") {
+            return Err(SetFailure::Unsupported);
+        }
+        Err(SetFailure::Other(SessionError::Failed(cli_error(
+            &output.stderr,
+        ))))
+    }
+
+    fn spawn_error(&self, e: io::Error) -> SessionError {
+        match e.kind() {
+            io::ErrorKind::NotFound => SessionError::CliNotFound(self.program.clone()),
+            _ => SessionError::Spawn(e),
+        }
+    }
+
+    /// The fallback for CLIs older than [`MIN_CLI_FOR_SET`]: runs
+    /// `aws configure sso-session` and answers its four prompts on stdin
+    /// (name, start URL, region, scopes). The CLI writes the file only after
+    /// the last answer; if it asks anything more it hits end of input and
+    /// exits without writing.
+    ///
+    /// Not on Windows: there the CLI's prompt library reads the console,
+    /// not stdin, and Lunge's CLI processes have no console.
+    #[cfg(windows)]
+    fn answer_prompts(
+        &self,
+        _config_path: &Path,
+        _answers: &[String; 4],
+    ) -> Result<(), SessionError> {
+        Err(SessionError::CliTooOld)
+    }
+
+    #[cfg(not(windows))]
+    fn answer_prompts(
+        &self,
+        config_path: &Path,
+        answers: &[String; 4],
+    ) -> Result<(), SessionError> {
+        use std::io::Write;
+
         let mut child = self
             .command()
             .args(["configure", "sso-session"])
             .arg("--no-cli-auto-prompt")
-            // Write exactly the file Lunge read.
             .env("AWS_CONFIG_FILE", config_path)
             .env_remove("AWS_PROFILE")
             .env_remove("AWS_DEFAULT_PROFILE")
@@ -194,10 +336,7 @@ impl AwsCli {
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|e| match e.kind() {
-                io::ErrorKind::NotFound => SessionError::CliNotFound(self.program.clone()),
-                _ => SessionError::Spawn(e),
-            })?;
+            .map_err(|e| self.spawn_error(e))?;
         if let Some(mut stdin) = child.stdin.take() {
             let input: String = answers.iter().map(|a| format!("{a}\n")).collect();
             // A write error means the CLI exited early; its status says why.
@@ -209,7 +348,7 @@ impl AwsCli {
         if !output.status.success() {
             return Err(SessionError::Failed(cli_error(&output.stderr)));
         }
-        verify(config_path, &answers)
+        verify(config_path, answers)
     }
 }
 
@@ -245,21 +384,16 @@ fn verify(config_path: &Path, answers: &[String; 4]) -> Result<(), SessionError>
                 config_path.display()
             ))
         })?;
-    for (key, expected) in [
-        ("sso_start_url", start_url),
-        ("sso_region", region),
-        ("sso_registration_scopes", scopes),
-    ] {
+    for (key, expected) in KEYS.iter().zip([start_url, region, scopes]) {
         let found = settings
             .iter()
             .rev()
-            .find(|(k, _)| k == key)
+            .find(|(k, _)| k == *key)
             .map(|(_, v)| v.as_str());
         if found != Some(expected.as_str()) {
             return Err(SessionError::Mismatch(format!(
                 "the AWS CLI wrote [sso-session {name}], but its {key} is {} instead of \
-                 \"{expected}\" (this AWS CLI version may ask different questions); \
-                 check that block in {}",
+                 \"{expected}\"; check that block in {}",
                 found.map_or("missing".to_string(), |v| format!("\"{v}\"")),
                 config_path.display()
             )));
@@ -281,13 +415,40 @@ mod tests {
         }
     }
 
-    /// A fake `aws configure sso-session`: logs its args and config path,
-    /// reads four answers, and appends a block built from them in
-    /// `write_order` (or exits with an error when `write_order` is empty).
-    fn fake_cli(dir: &Path, write_order: &str) -> (AwsCli, PathBuf) {
+    /// How the fake CLI handles `configure set --sso-session`.
+    #[derive(Clone, Copy)]
+    enum Set {
+        /// Writes the key, like CLI 2.34.22+.
+        Works,
+        /// Rejects the option, like older CLIs.
+        Unknown,
+        /// Writes the first key, then fails.
+        FailsSecond,
+    }
+
+    /// A fake AWS CLI: logs its args and config path. `configure set KEY
+    /// VALUE --sso-session NAME` behaves as `set` says. `configure
+    /// sso-session` reads four answers and appends a block built from them
+    /// in `write_order` (or exits with an error when `write_order` is
+    /// empty).
+    fn fake_cli(dir: &Path, set: Set, write_order: &str) -> (AwsCli, PathBuf) {
         let log = dir.join("calls.log");
+        let set = match set {
+            Set::Works => "works",
+            Set::Unknown => "unknown",
+            Set::FailsSecond => "fails-second",
+        };
         let script = format!(
             r#"echo "$* config=$AWS_CONFIG_FILE profile=$AWS_PROFILE" >> "{log}"
+if [ "$2" = set ]; then
+  case {set} in
+    unknown) echo "aws: [ERROR]: An error occurred (ParamValidation): Unknown options: --sso-session,$6" >&2; exit 252;;
+    fails-second) [ "$3" = sso_region ] && {{ echo "aws: [ERROR]: disk full" >&2; exit 255; }};;
+  esac
+  grep -qxF "[sso-session $6]" "$AWS_CONFIG_FILE" 2>/dev/null || printf '[sso-session %s]\n' "$6" >> "$AWS_CONFIG_FILE"
+  printf '%s = %s\n' "$3" "$4" >> "$AWS_CONFIG_FILE"
+  exit 0
+fi
 read name; read url; read region; read scopes
 [ -z "{write_order}" ] && {{ echo "Warning: Input is not a terminal (fd=0)." >&2; echo "aws: [ERROR]:" >&2; exit 255; }}
 set -- $(echo "{write_order}")
@@ -299,44 +460,112 @@ printf '[sso-session %s]\nsso_start_url = %s\nsso_region = %s\nsso_registration_
         (AwsCli::test_script(dir, &script), log)
     }
 
+    const BLOCK: &str = "[sso-session work]\nsso_start_url = https://example.awsapps.com/start\n\
+                         sso_region = us-east-1\nsso_registration_scopes = sso:account:access,sso:other\n";
+
+    fn set_call(key: &str, value: &str, config: &Path) -> String {
+        format!(
+            "configure set {key} {value} --sso-session work --no-cli-auto-prompt config={} profile=\n",
+            config.display()
+        )
+    }
+
     #[test]
-    fn answers_prompts_in_order_and_verifies() {
+    fn sets_each_key_with_configure_set_and_verifies() {
         let dir = tempfile::tempdir().unwrap();
         let config = dir.path().join("config");
         std::fs::write(&config, "[profile a]\nregion = us-east-1\n").unwrap();
-        let (cli, log) = fake_cli(dir.path(), "url region scopes");
+        let (cli, log) = fake_cli(dir.path(), Set::Works, "");
         cli.create_sso_session(&config, &new_session("work"))
             .unwrap();
         let written = std::fs::read_to_string(&config).unwrap();
-        assert!(written.contains(
-            "[sso-session work]\nsso_start_url = https://example.awsapps.com/start\n\
-             sso_region = us-east-1\nsso_registration_scopes = sso:account:access,sso:other\n"
-        ));
+        assert_eq!(written, format!("[profile a]\nregion = us-east-1\n{BLOCK}"));
         let calls = std::fs::read_to_string(log).unwrap();
         assert_eq!(
             calls,
-            format!(
-                "configure sso-session --no-cli-auto-prompt config={} profile=\n",
-                config.display()
-            )
+            [
+                set_call(
+                    "sso_start_url",
+                    "https://example.awsapps.com/start",
+                    &config
+                ),
+                set_call("sso_region", "us-east-1", &config),
+                set_call(
+                    "sso_registration_scopes",
+                    "sso:account:access,sso:other",
+                    &config
+                ),
+            ]
+            .concat()
         );
+    }
+
+    #[test]
+    fn shows_the_commands_save_runs() {
+        assert_eq!(
+            new_session("work").commands(),
+            [
+                "aws configure set sso_start_url https://example.awsapps.com/start --sso-session work",
+                "aws configure set sso_region us-east-1 --sso-session work",
+                "aws configure set sso_registration_scopes sso:account:access,sso:other --sso-session work",
+            ]
+        );
+        assert!(new_session(" ").commands()[0].ends_with("--sso-session NAME"));
     }
 
     #[test]
     fn works_without_a_config_file() {
         let dir = tempfile::tempdir().unwrap();
         let config = dir.path().join("config");
-        let (cli, _) = fake_cli(dir.path(), "url region scopes");
+        let (cli, _) = fake_cli(dir.path(), Set::Works, "");
         cli.create_sso_session(&config, &new_session("work"))
             .unwrap();
-        assert!(config.exists());
+        assert_eq!(std::fs::read_to_string(&config).unwrap(), BLOCK);
+    }
+
+    #[test]
+    fn reports_a_partial_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config");
+        let (cli, _) = fake_cli(dir.path(), Set::FailsSecond, "");
+        let err = cli
+            .create_sso_session(&config, &new_session("work"))
+            .unwrap_err();
+        let text = err.to_string();
+        assert!(text.contains("with only sso_start_url"), "{text}");
+        assert!(text.contains("disk full"), "{text}");
+    }
+
+    #[test]
+    fn falls_back_to_prompts_on_an_old_cli() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config");
+        std::fs::write(&config, "[profile a]\nregion = us-east-1\n").unwrap();
+        let (cli, log) = fake_cli(dir.path(), Set::Unknown, "url region scopes");
+        cli.create_sso_session(&config, &new_session("work"))
+            .unwrap();
+        let written = std::fs::read_to_string(&config).unwrap();
+        assert_eq!(written, format!("[profile a]\nregion = us-east-1\n{BLOCK}"));
+        let calls = std::fs::read_to_string(log).unwrap();
+        assert_eq!(
+            calls,
+            format!(
+                "{}configure sso-session --no-cli-auto-prompt config={} profile=\n",
+                set_call(
+                    "sso_start_url",
+                    "https://example.awsapps.com/start",
+                    &config
+                ),
+                config.display()
+            )
+        );
     }
 
     #[test]
     fn reports_answers_landing_in_the_wrong_place() {
         let dir = tempfile::tempdir().unwrap();
         let config = dir.path().join("config");
-        let (cli, _) = fake_cli(dir.path(), "url scopes region");
+        let (cli, _) = fake_cli(dir.path(), Set::Unknown, "url scopes region");
         let err = cli
             .create_sso_session(&config, &new_session("work"))
             .unwrap_err();
@@ -351,7 +580,7 @@ printf '[sso-session %s]\nsso_start_url = %s\nsso_region = %s\nsso_registration_
     fn explains_a_bare_cli_error() {
         let dir = tempfile::tempdir().unwrap();
         let config = dir.path().join("config");
-        let (cli, _) = fake_cli(dir.path(), "");
+        let (cli, _) = fake_cli(dir.path(), Set::Unknown, "");
         let err = cli
             .create_sso_session(&config, &new_session("work"))
             .unwrap_err();
@@ -370,7 +599,7 @@ printf '[sso-session %s]\nsso_start_url = %s\nsso_region = %s\nsso_registration_
              [sso-session 'half']\n",
         )
         .unwrap();
-        let (cli, log) = fake_cli(dir.path(), "url region scopes");
+        let (cli, log) = fake_cli(dir.path(), Set::Works, "url region scopes");
         let cases = [
             (new_session("existing"), "already exists"),
             (new_session("half"), "already exists"),
@@ -419,7 +648,8 @@ printf '[sso-session %s]\nsso_start_url = %s\nsso_region = %s\nsso_registration_
         assert!(!log.exists(), "CLI was run");
     }
 
-    /// Checks the prompt order against the real AWS CLI on `PATH`, writing
+    /// Checks the real AWS CLI on `PATH` writes the block (with `configure
+    /// set`, or the prompt fallback on a CLI older than 2.34.22), writing
     /// only to a temporary config. Run after upgrading the CLI:
     /// `cargo test -p lunge-core -- --ignored real_cli`
     #[test]
