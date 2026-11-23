@@ -8,8 +8,10 @@ is allowed before using it.
 
 Requirements
 ------------
-AWS CLI v2 (the Windows installer puts `aws` on your PATH). Lunge can add an
-SSO session for you, or use `aws configure sso`.
+AWS CLI v2 (the Windows installer puts `aws` on your PATH). To add an SSO
+session from Lunge you need AWS CLI 2.34.22 or newer (check with
+`aws --version`; rerun the AWS CLI installer to update). Older versions can
+still add one in a terminal with `aws configure sso`.
 
 Run it
 ------

@@ -2,8 +2,10 @@
 //! asks before sign-in, plus a drawer (top right, hidden by default) with
 //! the terminal route and the exact CLI input Save will use.
 //!
-//! PREFER THE CLI: Save pipes the answers into `aws configure sso-session`
-//! (see `lunge_core::sessions`), which writes the config; Lunge then runs
+//! PREFER THE CLI: Save has the AWS CLI write the block with
+//! `aws configure set --sso-session` (or, with an older CLI on macOS and
+//! Linux, by answering `aws configure sso-session`; see
+//! `lunge_core::sessions`); Lunge then runs
 //! `aws sso login`. The account and role questions come after sign-in, in
 //! the session's account list, because AWS only lists them once you're
 //! signed in.
@@ -208,12 +210,10 @@ impl AddSessionForm {
             let can_save = problem.is_none() && !busy;
             let save = ui
                 .add_enabled(can_save, egui::Button::new("Save and sign in"))
-                .on_hover_text(
-                    "Run aws configure sso-session with these answers, then aws sso login",
-                );
+                .on_hover_text("Have the AWS CLI save these settings, then run aws sso login");
             if busy {
                 ui.spinner();
-                ui.label("Running aws configure sso-session…");
+                ui.label("Running the AWS CLI…");
             } else if let Some(problem) = &problem {
                 ui.label(RichText::new(problem).weak());
             }
@@ -245,8 +245,8 @@ impl AddSessionForm {
         let (tx, rx) = mpsc::channel();
         let new = self.session.clone();
         let ctx = ctx.clone();
-        // PREFER THE CLI: `aws configure sso-session` writes the block. No
-        // credentials are involved.
+        // PREFER THE CLI: the AWS CLI writes the block. No credentials are
+        // involved.
         std::thread::spawn(move || {
             let result = cli
                 .create_sso_session(&config_path, &new)
@@ -301,29 +301,28 @@ impl AddSessionForm {
                 ui.label(RichText::new("What Save runs").strong());
                 ui.add(
                     egui::Label::new(
-                        RichText::new(
-                            "Lunge types your answers into the CLI's prompts, then checks \
-                             your config holds exactly what you entered.",
-                        )
+                        RichText::new(format!(
+                            "Lunge runs these, then checks your config holds exactly what \
+                                 you entered. AWS CLIs older than {} lack --sso-session; on \
+                                 macOS and Linux Lunge then types your answers into aws \
+                                 configure sso-session instead.",
+                            sessions::MIN_CLI_FOR_SET
+                        ))
                         .weak(),
                     )
                     .wrap(),
                 );
                 ui.add_space(4.0);
-                let answers = self.session.answers();
-                let name = if answers[0].is_empty() {
-                    "NAME"
-                } else {
-                    answers[0].as_str()
-                };
+                let name = self.session.answers()[0].clone();
+                let name = if name.is_empty() { "NAME".into() } else { name };
+                let commands = self.session.commands();
                 code_block(ui, |ui| {
                     ui.set_width(ui.available_width());
                     let line = |ui: &mut Ui, text: String| {
                         ui.add(egui::Label::new(RichText::new(text).monospace().small()).wrap());
                     };
-                    line(ui, "$ aws configure sso-session".into());
-                    for (prompt, answer) in sessions::PROMPTS.iter().zip(&answers) {
-                        line(ui, format!("{prompt}: {answer}"));
+                    for command in commands {
+                        line(ui, format!("$ {command}"));
                     }
                     line(ui, format!("$ aws sso login --sso-session {name}"));
                 });

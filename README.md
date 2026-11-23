@@ -23,9 +23,9 @@ seconds, and **Refresh** does it on demand.
 
 **Add SSO session** asks what `aws configure sso` asks before you sign in:
 a session name, your start URL, the SSO region, and the registration scopes
-(pre-filled with `sso:account:access`). **Save and sign in** passes those
-answers to `aws configure sso-session`, so the AWS CLI writes the
-`[sso-session]` block, not Lunge. Lunge then reads your config back to check
+(pre-filled with `sso:account:access`). **Save and sign in** runs
+`aws configure set KEY VALUE --sso-session NAME` for each setting, so the
+AWS CLI writes the `[sso-session]` block, not Lunge. Lunge then reads your config back to check
 the block holds exactly what you entered and runs `aws sso login`. Once
 you're signed in, your accounts appear and **Name** asks the rest of the
 CLI's questions (profile name, default region, and output format).
@@ -139,13 +139,16 @@ credentials to other tools or replace the AWS CLI; it requires it.
 - **Single accounts are listed only.** Access-key profiles (from
   `~/.aws/credentials`, or keys placed in `~/.aws/config`) appear under Single
   accounts; there's no sign-in or console action for them yet.
-- **Adding a session types into the CLI's prompts.** `aws configure
-  sso-session` has no flags, and `aws configure set` can't write
-  `[sso-session]` blocks, so Lunge answers the four prompts on the CLI's
-  input. If a future AWS CLI asks different questions, the CLI either stops
-  without writing anything or Lunge's check after saving catches the
-  mismatch and tells you which setting to fix. Either way, Lunge doesn't
-  carry on as if it had worked. The terminal route (**Show CLI**) always works.
+- **Adding a session works best with AWS CLI 2.34.22 or newer.** That's
+  the first release where `aws configure set` can write `[sso-session]`
+  blocks. With an older CLI on macOS or Linux, Lunge instead types your
+  answers into `aws configure sso-session`'s prompts; if that CLI asks
+  different questions, it either stops without writing anything or Lunge's
+  check after saving catches the mismatch. On Windows the older CLI's
+  prompts only read from a console window, so Lunge asks you to update the
+  CLI instead. The settings are written one at a time; if the CLI fails
+  partway, Lunge tells you which ones landed rather than carrying on as if
+  it had worked. The terminal route (**Show CLI**) always works.
 - **Adding a session doesn't edit or replace one.** Names already in your
   config are refused; change an existing session with `aws configure
   sso-session` in a terminal.
